@@ -1,0 +1,29 @@
+{
+  "name": "chuanban-antigravity-theme",
+  "version": "6.0.4",
+  "minNodeVersion": "22.0.0",
+  "fullMetricsNodeVersion": "22.13.0",
+  "distribution": {
+    "notionGuide": "https://chuanban.notion.site/chuanban-antigravity-theme-patch-db7c5846f37546be9481cd791aed0554",
+    "googleDriveFullBundle": "https://drive.google.com/drive/folders/1NX92SgVUqtSjWg6bt6sIJXy-cn7J_boC",
+    "githubRepo": "https://github.com/Anarcadia/chuanban-antigravity-theme"
+  },
+  "files": {
+    "daemon.mjs": {
+      "sha256": "b9769eda4ef1fb931b283f1b12f0012ab9e550b309f0939747c71fab5f3937c3",
+      "bytes": 325480
+    },
+    "runtime.js": {
+      "sha256": "774222867fe3dee942b74bc2dcad7a7144733fb810cdf219eee5c9744e986da4",
+      "bytes": 342712
+    },
+    "theme.css": {
+      "sha256": "4811c24c65ccad752e1e2f34ba091aceae11b8fff34ed055c08ee951d7963717",
+      "bytes": 167653
+    },
+    "i18n.json": {
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "bytes": 3
+    }
+  }
+}
