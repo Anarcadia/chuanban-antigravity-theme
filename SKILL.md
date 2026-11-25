@@ -1,6 +1,6 @@
 ---
 name: chuanban-antigravity-theme
-description: Warm-paper editorial theme, Claude-inspired typography, compact context menus, live context metrics capsule, and local SQLite Token Analytics for Google Antigravity 2.0 (v6.0.4 Global English Lightweight Edition · compatible with Antigravity 2.35.1+ / 2.35.0 / 2.34.0+ on macOS, Windows, and Linux). Zero `.asar` tampering, zero npm dependencies, <1 MB font download (or 0 MB pure native mode), 5-preset appearance switcher with Follow System pairing, and 2.5s hot-reload user layer. Trigger when the user asks to install, upgrade, customize, or troubleshoot the Chuanban Antigravity Theme.
+description: Warm-paper editorial theme, Claude-inspired typography, compact context menus, live context metrics capsule, and local SQLite Token Analytics for Google Antigravity 2.0 (v6.0.4 Global English Lightweight Edition · compatible with Antigravity 2.35.2+ / 2.35.0 / 2.34.0+ on macOS, Windows, and Linux). Zero `.asar` tampering, zero npm dependencies, <1 MB font download (or 0 MB pure native mode), 5-preset appearance switcher with Follow System pairing, and 2.5s hot-reload user layer. Trigger when the user asks to install, upgrade, customize, or troubleshoot the Chuanban Antigravity Theme.
 ---
 
 # Chuanban Antigravity Theme (v6.0.4 · Global Lightweight Edition — AI Agent Deployment Contract)

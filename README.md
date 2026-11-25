@@ -2,7 +2,7 @@
 
 > **Language Editions**: **English Lightweight Edition (Current)** · [简体中文完整汉化版 (`chuanban-antigravity-theme-patch`)](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)
 
-A non-invasive, warm-paper editorial theme, typography suite, compact context menu replacement, live context window capsule, and local SQLite Token Analytics dashboard for **Google Antigravity Desktop (`2.34.0` – `2.35.1+`)** across **macOS, Windows, and Linux**.
+A non-invasive, warm-paper editorial theme, typography suite, compact context menu replacement, live context window capsule, and local SQLite Token Analytics dashboard for **Google Antigravity Desktop (`2.34.0` – `2.35.2+`)** across **macOS, Windows, and Linux**.
 
 Built specifically as a **pure-English, ultra-lightweight parallel edition**:
 - **Zero `.asar` Modification & Zero `npm` Dependencies**: Pure loopback CDP runtime injection — never touches `app.asar` and never breaks OS code signing.

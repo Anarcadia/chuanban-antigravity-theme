@@ -1,6 +1,6 @@
 # Changelog
 
-## v6.0.4 (2026-11-25) — Initial Global Lightweight Parallel Release
+## v6.0.4 (2026-11-26) — Initial Global Lightweight Parallel Release
 
 - **Decoupled Pure-English Lightweight Architecture**:
   - Physically stripped the ~68 KB CJK DOM `MutationObserver` translation engine, Swarm polling translation shields, and all CJK dictionaries (`core/runtime.js` reduced by ~98 KB).

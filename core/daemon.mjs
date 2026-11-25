@@ -488,7 +488,7 @@ function resolveActiveChannelEndpoints(channelMode = 'auto', userCfg = {}) {
 // ============================================================================
 // 2. 动态构建注入载荷（支持 core/ + user/ 实时合并与热更新签名）
 // ============================================================================
-const BASE_VERSION = '20261125-v6.0.4-en';
+const BASE_VERSION = '20261126-v6.0.4-en';
 let cachedBundleSig = '';
 let cachedInjectScript = '';
 let cachedIframeInjectScript = '';
@@ -1858,12 +1858,6 @@ const browserWatcherBackoffUntil = new Map(); // `${channel}:${port}` -> timesta
 const attachingTargetIds = new Set();
 const destroyedWhileAttaching = new Set();
 
-// --keep-alive 健康检查在 daemon 存活时会在下方 PID 锁段直接 exit(0)，无需预先构建注入 bundle
-if (!KEEP_ALIVE_ONLY) {
-  await refreshInstalledExternalEditorsAsync();
-  rebuildBundleIfNeeded();
-}
-
 const MY_PROC_START_MS = Math.round(Date.now() - process.uptime() * 1000);
 const DAEMON_LOG_FILE = path.join(os.tmpdir(), 'ag-theme-daemon.log');
 
@@ -2209,8 +2203,9 @@ if (!RUN_ONCE) {
   }
 }
 
-// --keep-alive 确认原 daemon 已退出、由本进程接管后，再构建注入 bundle
-if (KEEP_ALIVE_ONLY) rebuildBundleIfNeeded();
+// Confirm PID lock ownership (or --once mode) before probing external editors and building bundle
+await refreshInstalledExternalEditorsAsync();
+rebuildBundleIfNeeded();
 
 // ============================================================================
 // 4. SQLite + Protobuf 实时会话指标解析器（读取 ~/.gemini/antigravity/conversations/<id>.db）
