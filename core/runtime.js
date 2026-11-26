@@ -106,7 +106,7 @@
     }
   }
 
-  const PATCH_VERSION = boot.version || '20261126-v6.0.4-en';
+  const PATCH_VERSION = boot.version || '20261126-v6.0.5-en';
   const DETECTED_OS =
     boot.platform || (/Win/i.test(navigator.platform || '') ? 'win32' : /Mac/i.test(navigator.platform || '') ? 'darwin' : 'linux');
   const ENABLED = boot.enabled !== false;
@@ -194,7 +194,7 @@
   }
 
   const DEFAULT_EXCLUDE_I18N =
-    'code, pre, kbd, samp, textarea, input, style, script, noscript, [contenteditable="true"], [data-markdown-root], [data-testid="user-message-content"], .agy-user-bubble, .monaco-editor, .monaco-diff-editor, .xterm, [class*="onyx-key"], .prose, .markdown, [class*="chat-message"], [class*="group/file-title"], [data-uri^="file:"], [data-uri^="vscode-"], a.inline-pill[href^="file:"], a.inline-pill[href^="vscode-"], [data-testid="conversation-row-sidebar"] a[href^="/c/"], [data-testid="conversation-row-sidebar"] span.truncate, [data-testid="conversation-row-history"] a[href^="/c/"], [data-testid="conversation-row-history"] span.truncate, [data-testid^="sidebar-agent-row-"] span.truncate, [data-testid="sidebar-agent-hover-card-title"], [data-testid="coordinator-hover-card-title"], [data-testid="doc-row-title"], [data-testid="conversation-navigator-turn"], [data-testid="side-question-followup-user"], [data-testid="comment-card-text"], [data-testid="automation-name"], [data-testid="automation-instructions-text"], [data-testid="step-plan-item"], [data-testid="live-transcript"], [data-testid="voice-transcript-summary-lead"], [data-testid="voice-transcript-summary-point"], [data-testid="project-header"] span.truncate, .msg-body, #raw, [data-testid="swarm-raw"], #swarm-title, #ag-live-metrics-pill, .ag-live-metrics-pill, [data-ag-metrics-pill], #ag-live-metrics-tooltip, #ag-token-nav-section, #ag-token-analytics-panel, #ag-ta-tooltip, [data-ag-token-ui], [data-ag-lang-row="1"], [data-ag-sys-follow-row="1"]';
+    'code, pre, kbd, samp, textarea, input, style, script, noscript, [contenteditable="true"], [data-markdown-root], [data-testid="user-message-content"], .agy-user-bubble, .monaco-editor, .monaco-diff-editor, .xterm, [class*="onyx-key"], .prose, .markdown, [class*="chat-message"], [class*="group/file-title"], [data-uri^="file:"], [data-uri^="vscode-"], a.inline-pill[href^="file:"], a.inline-pill[href^="vscode-"], [data-testid="conversation-row-sidebar"] a[href^="/c/"], [data-testid="conversation-row-sidebar"] span.truncate, [data-testid="conversation-row-history"] a[href^="/c/"], [data-testid="conversation-row-history"] span.truncate, [data-testid^="sidebar-agent-row-"] span.truncate, [data-testid="sidebar-agent-hover-card-title"], [data-testid="coordinator-hover-card-title"], [data-testid="coordinator-card-title"], [data-testid="coordinator-card-latest-line"], [data-testid="context-provider-hover-card-title"], [data-testid="ask-question-header-text"], [data-testid="ask-question-option-text"], [data-testid="doc-row-title"], [data-testid="conversation-navigator-turn"], [data-testid="side-question-followup-user"], [data-testid="comment-card-text"], [data-testid="automation-name"], [data-testid="automation-instructions-text"], [data-testid="step-plan-item"], [data-testid="live-transcript"], [data-testid="voice-transcript-summary-lead"], [data-testid="voice-transcript-summary-point"], [data-testid="project-header"] span.truncate, .msg-body, #raw, [data-testid="swarm-raw"], #swarm-title, #ag-live-metrics-pill, .ag-live-metrics-pill, [data-ag-metrics-pill], #ag-live-metrics-tooltip, #ag-token-nav-section, #ag-token-analytics-panel, #ag-ta-tooltip, [data-ag-token-ui], [data-ag-lang-row="1"], [data-ag-sys-follow-row="1"]';
 
   function cleanupTokenAnalyticsDom() {
     try {
@@ -2774,6 +2774,13 @@
           window.__ag_internal_sys_click = false;
         }
       } else if (isCurrentThemeModeDark() && darkBtn) {
+        if (document.documentElement.getAttribute('data-ag-preset') === PRESETS.NATIVE) {
+          setRuntimeLightPreset(window.__ag_last_non_native_light || PRESETS.MORANDI, true);
+          setRuntimeDarkPreset(
+            document.documentElement.getAttribute('data-ag-dark-preset') || DEFAULT_DARK_PRESET,
+            true
+          );
+        }
         window.__ag_internal_moon_click = true;
         try {
           darkBtn.click();
@@ -2830,6 +2837,16 @@
 
       if (slot === 'system') {
         setRuntimeLightPreset(PRESETS.NATIVE, true);
+        const liveLightBtn = group ? group.querySelector('button[data-ag-native-theme-slot="light"]') : null;
+        const sunPressed = isThemeBtnPressed(liveLightBtn);
+        if (liveLightBtn && !isFollowSystem && !sunPressed) {
+          window.__ag_internal_sun_click = true;
+          try {
+            liveLightBtn.click();
+          } finally {
+            window.__ag_internal_sun_click = false;
+          }
+        }
       } else if (slot === 'light') {
         setRuntimeLightPreset(PRESETS.ABSOLUTELY, true);
       } else if (slot === 'dark') {
@@ -5213,7 +5230,15 @@
       let cachedBaseVm = { key: '', payloadRef: null, vm: null };
       let tabActive = false;
       let syncRaf = null;
+      let warmupPollTimer = null;
       let disposed = false;
+
+      function clearWarmupPollTimer() {
+        if (warmupPollTimer) {
+          clearTimeout(warmupPollTimer);
+          warmupPollTimer = null;
+        }
+      }
       let hmTooltipVisible = false;
       let hmGlobalListenersBound = false;
       let activeHmCell = null;
@@ -5266,13 +5291,13 @@
         }
       };
 
-      async function fetchTokenAnalytics(force = false) {
+      async function fetchTokenAnalytics(force = false, silent = false) {
         if (disposed) return;
         const now = Date.now();
         const curMetricsSig = String(window.__ag_last_metrics?.sig || '');
         const sigChanged = Boolean(curMetricsSig && curMetricsSig !== dataState.lastMetricsSig);
         const reopenedStale = Boolean(dataState.modalClosedSinceFetch && now - dataState.fetchedAt > 3000);
-        if (!force && !sigChanged && !reopenedStale && dataState.payload && now - dataState.fetchedAt < CACHE_TTL_MS) {
+        if (!force && !silent && !sigChanged && !reopenedStale && dataState.payload && now - dataState.fetchedAt < CACHE_TTL_MS) {
           return;
         }
         if (typeof window.__agRequestTokenAnalytics !== 'function') {
@@ -5282,15 +5307,18 @@
           return;
         }
         if (dataState.loading && !force) return;
+        clearWarmupPollTimer();
 
         dataState.loading = true;
         dataState.error = null;
         if (dataState.payload) {
-          const panel = document.getElementById(PANEL_ID);
-          const refreshBtn = panel?.querySelector('#ag-ta-refresh-btn');
-          if (refreshBtn) {
-            refreshBtn.textContent = 'Refreshing…';
-            refreshBtn.disabled = true;
+          if (!silent) {
+            const panel = document.getElementById(PANEL_ID);
+            const refreshBtn = panel?.querySelector('#ag-ta-refresh-btn');
+            if (refreshBtn) {
+              refreshBtn.textContent = 'Refreshing…';
+              refreshBtn.disabled = true;
+            }
           }
         } else {
           renderPanel();
@@ -5305,7 +5333,7 @@
             }, REQUEST_TIMEOUT_MS);
             pendingRequests.set(reqId, { resolve, reject, timer });
             try {
-              window.__agRequestTokenAnalytics(JSON.stringify({ reqId, maxDays: 365, force }));
+              window.__agRequestTokenAnalytics(JSON.stringify({ reqId, maxDays: 365, force, silent: Boolean(silent) }));
             } catch (err) {
               clearTimeout(timer);
               pendingRequests.delete(reqId);
@@ -5319,6 +5347,14 @@
           dataState.lastMetricsSig = String(window.__ag_last_metrics?.sig || '');
           dataState.modalClosedSinceFetch = false;
           dataState.error = null;
+          if (data?.stats?.warmupPending && tabActive) {
+            warmupPollTimer = setTimeout(() => {
+              warmupPollTimer = null;
+              if (!disposed && tabActive) {
+                void fetchTokenAnalytics(false, true);
+              }
+            }, 4000);
+          }
         } catch (err) {
           if (disposed) return;
           dataState.error = String(err?.message || err || 'Failed to query Token Analytics');
@@ -5992,7 +6028,8 @@
         const badge = panel.querySelector('#ag-ta-header-badge');
         const st = dataState.payload?.stats;
         if (badge && st) {
-          badge.textContent = `${st.scannedDbs}/${st.dbCount} DBs · ${st.totalCalls} calls · ${dataState.payload.elapsedMs}ms`;
+          const warmupSuffix = st.warmupPending ? ' · warming…' : '';
+          badge.textContent = `${st.scannedDbs}/${st.dbCount} DBs · ${st.totalCalls} calls · ${dataState.payload.elapsedMs}ms${warmupSuffix}`;
         }
 
         const filterPills = [];
@@ -6293,6 +6330,7 @@
           modal.setAttribute('data-ag-token-tab-active', '1');
         } else {
           modal.removeAttribute('data-ag-token-tab-active');
+          clearWarmupPollTimer();
           hideHmTooltip();
         }
         const navBtn = document.getElementById(NAV_BTN_ID);
@@ -6311,6 +6349,7 @@
         if (disposed || !document.body) return;
         const modal = findActiveSettingsModal();
         if (!modal) {
+          clearWarmupPollTimer();
           if (hmTooltipVisible) hideHmTooltip();
           if (dataState.fetchedAt > 0) dataState.modalClosedSinceFetch = true;
           if (tabActive) {
@@ -6583,6 +6622,7 @@
 
       window.__ag_cleanup_fns.push(() => {
         disposed = true;
+        clearWarmupPollTimer();
         unbindHmGlobalListeners();
         hmDayByDate.clear();
         activeHmCell = null;

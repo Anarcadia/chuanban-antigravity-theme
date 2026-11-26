@@ -488,7 +488,7 @@ function resolveActiveChannelEndpoints(channelMode = 'auto', userCfg = {}) {
 // ============================================================================
 // 2. 动态构建注入载荷（支持 core/ + user/ 实时合并与热更新签名）
 // ============================================================================
-const BASE_VERSION = '20261126-v6.0.4-en';
+const BASE_VERSION = '20261126-v6.0.5-en';
 let cachedBundleSig = '';
 let cachedInjectScript = '';
 let cachedIframeInjectScript = '';
@@ -504,6 +504,10 @@ const tokenAnalyticsSummariesCache = new Map(); // summariesDbPath -> { sig, map
 let lastTokenAnalyticsAccessMs = 0;
 let tokenAnalyticsDiskLoaded = false;
 let tokenAnalyticsPersistTimer = null;
+let tokenAnalyticsWarmupTimer = null;
+let tokenAnalyticsBgAbort = false;
+let tokenAnalyticsFgAbortSeq = 0;
+let inFlightBgWarmupPromise = null;
 let tokenAnalyticsLastJsonCache = { dataRef: null, jsonStr: '' };
 let inFlightTokenAnalyticsPromise = null;
 let inFlightTokenAnalyticsKey = '';
@@ -2369,18 +2373,18 @@ function readUtf8(val) {
   return '';
 }
 
-function getSqliteFileSig(dbPath, { trackUnc = false } = {}) {
+function getSqliteFileSig(dbPath, { trackUnc = false, uncBudgetMs = 400 } = {}) {
   try {
     const unc = trackUnc && isUncPath(dbPath);
     if (unc && Date.now() < wslUncBackoffUntil) return null;
     const t0 = Date.now();
     const st = fs.statSync(dbPath, { throwIfNoEntry: false });
-    markUncSlowIfExceeded(unc, t0);
+    markUncSlowIfExceeded(unc, t0, uncBudgetMs);
     if (!st) return null;
     let wst = null;
     if (!unc || Date.now() >= wslUncBackoffUntil) {
       wst = fs.statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
-      markUncSlowIfExceeded(unc, t0);
+      markUncSlowIfExceeded(unc, t0, uncBudgetMs);
     }
     const baseSig = `${st.mtimeMs}:${st.size}`;
     const walSig = wst ? `${wst.mtimeMs}:${wst.size}` : '0:0';
@@ -2585,7 +2589,7 @@ function buildSqliteImmutableUncUri(uncDbPath) {
   return `file://${encoded}?immutable=1`;
 }
 
-function withReadOnlyDb(dbPath, timeoutMs, fn) {
+function withReadOnlyDb(dbPath, timeoutMs, fn, { bypassStagingLru = false } = {}) {
   if (!isUncPath(dbPath)) {
     const db = new DatabaseSync(dbPath, { readOnly: true, timeout: timeoutMs });
     try {
@@ -2626,17 +2630,25 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
     }
   }
 
-  // 活跃 WAL 流式会话主库副本按 baseSig 缓存复用（O(1) LRU）：主库未发生 checkpoint 时每拍仅拷贝轻量 -wal，消除每 2.5s 跨 P9 拷贝数十 MB 主库
+  // 活跃 WAL 流式会话主库副本按 baseSig 缓存复用（O(1) LRU）：主库未发生 checkpoint 时每拍仅拷贝轻量 -wal，消除每 2.5s 跨 P9 拷贝数十 MB 主库；
+  // 批量 Token 统计传 bypassStagingLru=true，可复用已有副本但绝不挤占实时胶囊专用的 6 个缓存槽位。
   sweepOrphanWslStagingFilesOnce();
   let staged = baseSig ? wslSqliteStagingCache.get(dbPath) : null;
   let tmpBase = '';
   let reuseStaged = false;
+  let stagedInCache = false;
+  const shouldStageInLru = Boolean(baseSig && !bypassStagingLru && hasActiveWal);
   if (staged && staged.baseSig === baseSig && fs.existsSync(staged.tmpBase)) {
     tmpBase = staged.tmpBase;
     staged.lastUsedMs = Date.now();
     wslSqliteStagingCache.delete(dbPath);
     wslSqliteStagingCache.set(dbPath, staged);
     reuseStaged = true;
+    stagedInCache = true;
+  } else if (!shouldStageInLru) {
+    if (!bypassStagingLru && staged) removeWslStagingEntry(dbPath);
+    wslSqliteTmpSeq = (wslSqliteTmpSeq + 1) % 1000000;
+    tmpBase = path.join(os.tmpdir(), `ag-wsl-sqlite-${process.pid}-${wslSqliteTmpSeq}.db`);
   } else {
     if (staged) removeWslStagingEntry(dbPath);
     while (wslSqliteStagingCache.size >= MAX_WSL_STAGING_ENTRIES) {
@@ -2659,8 +2671,9 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
     if (!reuseStaged) {
       fs.copyFileSync(dbPath, tmpBase);
       copySucceeded = true;
-      if (baseSig) {
+      if (shouldStageInLru) {
         wslSqliteStagingCache.set(dbPath, { tmpBase, baseSig, lastUsedMs: Date.now() });
+        stagedInCache = true;
       }
     }
     if (hasActiveWal) {
@@ -2674,6 +2687,7 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
             fs.copyFileSync(dbPath, tmpBase);
             baseSig = postSig;
             wslSqliteStagingCache.set(dbPath, { tmpBase, baseSig, lastUsedMs: Date.now() });
+            stagedInCache = true;
           }
         }
       } catch (walErr) {
@@ -2682,8 +2696,12 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
           fs.copyFileSync(dbPath, tmpBase);
           const postSt = fs.statSync(dbPath, { throwIfNoEntry: false });
           baseSig = postSt ? `${postSt.mtimeMs}:${postSt.size}` : '';
-          if (baseSig) {
+          if (baseSig && reuseStaged) {
             wslSqliteStagingCache.set(dbPath, { tmpBase, baseSig, lastUsedMs: Date.now() });
+            stagedInCache = true;
+          } else if (stagedInCache) {
+            wslSqliteStagingCache.delete(dbPath);
+            stagedInCache = false;
           }
         } else {
           throw walErr;
@@ -2691,17 +2709,35 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
       }
     }
     tmpDb = new DatabaseSync(tmpBase, { readOnly: true, timeout: timeoutMs });
-    return fn(tmpDb);
+    let fnOpened = true;
+    try {
+      return fn(tmpDb);
+    } catch (fnErr) {
+      if (stagedInCache && /malformed|not a database|disk i\/o/i.test(String(fnErr?.message || ''))) {
+        removeWslStagingEntry(dbPath);
+        stagedInCache = false;
+        copySucceeded = false;
+      }
+      fnOpened = false;
+      throw fnErr;
+    } finally {
+      void fnOpened;
+    }
   } catch (err) {
-    removeWslStagingEntry(dbPath);
-    copySucceeded = false;
+    if (stagedInCache && !tmpDb) {
+      removeWslStagingEntry(dbPath);
+      stagedInCache = false;
+    }
+    if (!tmpDb) {
+      copySucceeded = false;
+    }
     throw err;
   } finally {
     try {
       tmpDb?.close();
     } catch {}
     // 每次关闭后必删 -wal 与 -shm 以防下一拍 WAL 索引错位；若未纳入 baseSig 复用则一并删主库
-    const suffixesToClean = copySucceeded && baseSig ? ['-wal', '-shm'] : ['', '-wal', '-shm'];
+    const suffixesToClean = copySucceeded && baseSig && stagedInCache ? ['-wal', '-shm'] : ['', '-wal', '-shm'];
     for (const suffix of suffixesToClean) {
       try {
         fs.rmSync(`${tmpBase}${suffix}`, { force: true });
@@ -2712,16 +2748,21 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
 
 function readTrajectoryLineage(dbPath) {
   try {
-    return withReadOnlyDb(dbPath, 20, (db) => {
-      const row = db.prepare('SELECT data FROM trajectory_metadata_blob LIMIT 1').get();
-      if (!row || !row.data) {
-        return { ok: true, hasMeta: false, parentId: '', rootId: '' };
-      }
-      const meta = parseProto(row.data);
-      const parentId = readUtf8(meta.get(5)).trim();
-      const rootId = readUtf8(meta.get(6)).trim();
-      return { ok: true, hasMeta: true, parentId, rootId };
-    });
+    return withReadOnlyDb(
+      dbPath,
+      20,
+      (db) => {
+        const row = db.prepare('SELECT data FROM trajectory_metadata_blob LIMIT 1').get();
+        if (!row || !row.data) {
+          return { ok: true, hasMeta: false, parentId: '', rootId: '' };
+        }
+        const meta = parseProto(row.data);
+        const parentId = readUtf8(meta.get(5)).trim();
+        const rootId = readUtf8(meta.get(6)).trim();
+        return { ok: true, hasMeta: true, parentId, rootId };
+      },
+      { bypassStagingLru: true }
+    );
   } catch (err) {
     const msg = String(err?.message || '');
     if (/no such table/i.test(msg)) {
@@ -2799,6 +2840,10 @@ function refreshLineageIndex(conversationsDir) {
     dirState = {
       dirMtimeMs: -1,
       scanningDirMtimeMs: -1,
+      dirScanEntries: null,
+      dirScanIndex: 0,
+      dirSeenIds: null,
+      dirScanEnqueued: false,
       lastPendingScanAt: 0,
       unindexedQueue: [],
       unindexedSet: new Set(),
@@ -2815,50 +2860,91 @@ function refreshLineageIndex(conversationsDir) {
   if (unc && nowMs < wslUncBackoffUntil) {
     return {
       dirState,
-      isDraining: dirState.unindexedQueue.length > 0,
+      isDraining: Boolean(dirState.dirScanEntries || dirState.unindexedQueue.length > 0),
       backoffSkipped: true
     };
   }
 
+  const tDirStat = Date.now();
   const dirSt = fs.statSync(conversationsDir, { throwIfNoEntry: false });
+  if (markUncSlowIfExceeded(unc, tDirStat, 1200)) {
+    return {
+      dirState,
+      isDraining: Boolean(dirState.dirScanEntries || dirState.unindexedQueue.length > 0),
+      backoffSkipped: true
+    };
+  }
   if (!dirSt || !dirSt.isDirectory()) {
     return { dirState, isDraining: false, backoffSkipped: false };
   }
 
   const dirChanged = dirSt.mtimeMs !== dirState.dirMtimeMs && dirSt.mtimeMs !== dirState.scanningDirMtimeMs;
-  const tWallStart = nowMs;
   let backoffSkipped = false;
+  let sliceDeferred = false;
 
   if (dirChanged) {
     let entries;
+    const tReaddir = Date.now();
     try {
       entries = fs.readdirSync(conversationsDir);
     } catch {
-      if (unc && Date.now() - tWallStart > 400) {
-        wslUncBackoffUntil = Date.now() + 45000;
+      if (markUncSlowIfExceeded(unc, tReaddir, 1500)) {
         backoffSkipped = true;
       }
-      return { dirState, isDraining: dirState.unindexedQueue.length > 0, backoffSkipped };
+      return {
+        dirState,
+        isDraining: Boolean(dirState.dirScanEntries || dirState.unindexedQueue.length > 0),
+        backoffSkipped
+      };
     }
+    if (markUncSlowIfExceeded(unc, tReaddir, 1500)) {
+      return {
+        dirState,
+        isDraining: Boolean(dirState.dirScanEntries || dirState.unindexedQueue.length > 0),
+        backoffSkipped: true
+      };
+    }
+    dirState.scanningDirMtimeMs = dirSt.mtimeMs;
+    dirState.dirScanEntries = entries;
+    dirState.dirScanIndex = 0;
+    dirState.dirSeenIds = new Set();
+    dirState.dirScanEnqueued = false;
+  }
 
-    const seenIds = new Set();
-    let enqueued = false;
-    for (let i = 0; i < entries.length; i++) {
-      if (unc && Date.now() - tWallStart > 400) {
-        wslUncBackoffUntil = Date.now() + 45000;
+  if (Array.isArray(dirState.dirScanEntries)) {
+    const entries = dirState.dirScanEntries;
+    const seenIds = dirState.dirSeenIds || (dirState.dirSeenIds = new Set());
+    const tStatSliceStart = Date.now();
+    const statSliceBudgetMs = unc ? 120 : 400;
+    let statsInSlice = 0;
+
+    while (dirState.dirScanIndex < entries.length) {
+      if (unc && Date.now() < wslUncBackoffUntil) {
         backoffSkipped = true;
         break;
       }
-      const m = entries[i].match(DB_FILE_RE);
+      if (statsInSlice > 0 && Date.now() - tStatSliceStart >= statSliceBudgetMs) {
+        sliceDeferred = true;
+        break;
+      }
+      const entryName = entries[dirState.dirScanIndex++];
+      const m = entryName.match(DB_FILE_RE);
       if (!m) continue;
       const uuid = m[1];
       seenIds.add(uuid);
       const existingNode = dirState.nodes.get(uuid);
       if (existingNode?.hasMeta === true) continue;
+      if (existingNode && !dirState.noMetaPending.has(uuid)) continue;
       if (dirState.unindexedSet.has(uuid)) continue;
 
-      const dbPath = path.join(conversationsDir, entries[i]);
+      const dbPath = path.join(conversationsDir, entryName);
+      const tFileStat = Date.now();
       const statInfo = getDbStatByPath(dbPath);
+      statsInSlice += 1;
+      if (markUncSlowIfExceeded(unc, tFileStat, 800)) {
+        backoffSkipped = true;
+        break;
+      }
       if (!statInfo) continue;
 
       if (existingNode && existingNode.statSig === statInfo.sig) continue;
@@ -2867,10 +2953,10 @@ function refreshLineageIndex(conversationsDir) {
       }
       dirState.unindexedQueue.push({ uuid, dbPath, mtimeMs: statInfo.mtimeMs, statSig: statInfo.sig });
       dirState.unindexedSet.add(uuid);
-      enqueued = true;
+      dirState.dirScanEnqueued = true;
     }
 
-    if (!backoffSkipped) {
+    if (!backoffSkipped && !sliceDeferred && dirState.dirScanIndex >= entries.length) {
       for (const existingId of Array.from(dirState.nodes.keys())) {
         if (!seenIds.has(existingId)) {
           deleteNodeLineage(dirState, existingId);
@@ -2886,24 +2972,33 @@ function refreshLineageIndex(conversationsDir) {
             dirState.unindexedSet.delete(item.uuid);
           }
         }
-        if (enqueued || nextQueue.length !== dirState.unindexedQueue.length) {
+        if (dirState.dirScanEnqueued || nextQueue.length !== dirState.unindexedQueue.length) {
           nextQueue.sort((a, b) => b.mtimeMs - a.mtimeMs);
         }
         dirState.unindexedQueue = nextQueue;
       }
-      dirState.scanningDirMtimeMs = dirSt.mtimeMs;
-    } else if (enqueued && dirState.unindexedQueue.length > 1) {
+      dirState.dirScanEntries = null;
+      dirState.dirScanIndex = 0;
+      dirState.dirSeenIds = null;
+      dirState.dirScanEnqueued = false;
+    } else if (dirState.dirScanEnqueued && dirState.unindexedQueue.length > 1) {
       dirState.unindexedQueue.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      dirState.dirScanEnqueued = false;
     }
   } else if (dirState.unindexedQueue.length === 0) {
     const pendingRescanMs = unc ? NO_META_RESCAN_UNC_MS : NO_META_RESCAN_LOCAL_MS;
     if (dirState.noMetaPending.size > 0 && nowMs - dirState.lastPendingScanAt >= pendingRescanMs) {
       dirState.lastPendingScanAt = nowMs;
       const newlyChanged = [];
+      const tPendingSlice = Date.now();
+      let pendingStats = 0;
       for (const [uuid, prevSig] of Array.from(dirState.noMetaPending.entries())) {
-        if (unc && Date.now() - tWallStart > 400) {
-          wslUncBackoffUntil = Date.now() + 45000;
+        if (unc && Date.now() < wslUncBackoffUntil) {
           backoffSkipped = true;
+          break;
+        }
+        if (unc && pendingStats > 0 && Date.now() - tPendingSlice >= 120) {
+          sliceDeferred = true;
           break;
         }
         if (dirState.nodes.get(uuid)?.hasMeta) {
@@ -2911,7 +3006,13 @@ function refreshLineageIndex(conversationsDir) {
           continue;
         }
         const dbPath = path.join(conversationsDir, `${uuid}.db`);
+        const tFileStat = Date.now();
         const statInfo = getDbStatByPath(dbPath);
+        pendingStats += 1;
+        if (markUncSlowIfExceeded(unc, tFileStat, 800)) {
+          backoffSkipped = true;
+          break;
+        }
         if (!statInfo) {
           dirState.noMetaPending.delete(uuid);
           continue;
@@ -2932,39 +3033,51 @@ function refreshLineageIndex(conversationsDir) {
   }
 
   if (dirState.unindexedQueue.length === 0) {
-    if (!backoffSkipped && dirState.scanningDirMtimeMs >= 0) {
+    if (!backoffSkipped && !dirState.dirScanEntries && dirState.scanningDirMtimeMs >= 0) {
       dirState.dirMtimeMs = dirState.scanningDirMtimeMs;
     }
-    return { dirState, isDraining: false, backoffSkipped };
+    return { dirState, isDraining: Boolean(dirState.dirScanEntries), backoffSkipped };
   }
 
   if (backoffSkipped || (unc && Date.now() < wslUncBackoffUntil)) {
     return {
       dirState,
-      isDraining: dirState.unindexedQueue.length > 0,
+      isDraining: Boolean(dirState.dirScanEntries || dirState.unindexedQueue.length > 0),
       backoffSkipped: true
     };
   }
 
+  if (unc && Date.now() - nowMs >= 140) {
+    return {
+      dirState,
+      isDraining: true,
+      backoffSkipped: false
+    };
+  }
+
   const tPerfStart = performance.now();
-  const maxTickOpens = unc ? LINEAGE_TICK_MAX_OPENS_UNC : LINEAGE_TICK_MAX_OPENS;
+  const maxTickOpens = unc ? 4 : LINEAGE_TICK_MAX_OPENS;
+  const maxTickSliceMs = unc ? 160 : LINEAGE_TICK_MAX_MS;
   let opens = 0;
   let qIdx = 0;
   const busyRetry = [];
 
   while (qIdx < dirState.unindexedQueue.length) {
-    if (opens > 0 && (opens >= maxTickOpens || performance.now() - tPerfStart >= LINEAGE_TICK_MAX_MS)) {
+    if (opens > 0 && (opens >= maxTickOpens || performance.now() - tPerfStart >= maxTickSliceMs)) {
       break;
     }
-    if (unc && Date.now() - tWallStart > 400) {
-      wslUncBackoffUntil = Date.now() + 45000;
+    if (unc && Date.now() < wslUncBackoffUntil) {
       backoffSkipped = true;
       break;
     }
     const item = dirState.unindexedQueue[qIdx++];
     dirState.unindexedSet.delete(item.uuid);
     opens += 1;
+    const tOpen = Date.now();
     const res = readTrajectoryLineage(item.dbPath);
+    if (markUncSlowIfExceeded(unc, tOpen, 1500)) {
+      backoffSkipped = true;
+    }
     if (res.ok) {
       if (res.hasMeta) {
         dirState.noMetaPending.delete(item.uuid);
@@ -2992,6 +3105,7 @@ function refreshLineageIndex(conversationsDir) {
       busyRetry.push(item);
       dirState.unindexedSet.add(item.uuid);
     }
+    if (backoffSkipped) break;
   }
 
   if (qIdx > 0 || busyRetry.length > 0) {
@@ -3002,18 +3116,13 @@ function refreshLineageIndex(conversationsDir) {
     dirState.unindexedQueue = remaining;
   }
 
-  if (unc && !backoffSkipped && Date.now() - tWallStart > 400) {
-    wslUncBackoffUntil = Date.now() + 45000;
-    backoffSkipped = true;
-  }
-
-  if (dirState.unindexedQueue.length === 0 && !backoffSkipped && dirState.scanningDirMtimeMs >= 0) {
+  if (!dirState.dirScanEntries && dirState.unindexedQueue.length === 0 && !backoffSkipped && dirState.scanningDirMtimeMs >= 0) {
     dirState.dirMtimeMs = dirState.scanningDirMtimeMs;
   }
 
   return {
     dirState,
-    isDraining: dirState.unindexedQueue.length > 0,
+    isDraining: Boolean(dirState.dirScanEntries || dirState.unindexedQueue.length > 0),
     backoffSkipped
   };
 }
@@ -3089,21 +3198,20 @@ function getCompositeChildSnapshot(cascadeId, conversationsDir, parentSig = '') 
       childSigParts.push(`${cid}=${prev || '0:0|0:0'}`);
     }
   } else {
+    let childStatCount = 0;
     for (let i = 0; i < descendantIds.length; i++) {
       const cid = descendantIds[i];
-      if (unc && (Date.now() < wslUncBackoffUntil || Date.now() - t0 > 400)) {
-        if (Date.now() >= wslUncBackoffUntil) {
-          wslUncBackoffUntil = Date.now() + 45000;
-        }
+      if (unc && (Date.now() < wslUncBackoffUntil || (childStatCount > 0 && Date.now() - t0 >= 160))) {
         partialStale = true;
         const prev = childMetricsCache.get(path.join(conversationsDir, `${cid}.db`))?.sig || '';
         childSigs.set(cid, prev || 'unc_deferred');
         childSigParts.push(`${cid}=${prev || '0:0|0:0'}`);
         continue;
       }
+      const tChildStat = Date.now();
       const statInfo = getDbStatByPath(path.join(conversationsDir, `${cid}.db`));
-      if (unc && Date.now() - t0 > 400) {
-        wslUncBackoffUntil = Date.now() + 45000;
+      childStatCount += 1;
+      if (markUncSlowIfExceeded(unc, tChildStat, 800)) {
         partialStale = true;
       }
       childSigs.set(cid, statInfo ? statInfo.sig : 'missing');
@@ -3226,7 +3334,9 @@ function parseGenMetadataRow(r) {
   const slugRaw = chat.get(19);
   const slug = slugRaw instanceof Uint8Array ? textDecoder.decode(slugRaw) : '';
   const thinkUnreported =
-    !usage.has(9) && thinkTok === 0 && (apiProvider === 26 || /^claude-/i.test(slug));
+    !usage.has(9) &&
+    thinkTok === 0 &&
+    (apiProvider === 26 || apiProvider === 31 || apiProvider === 32 || /^(?:claude|gpt)-/i.test(slug));
   const ttft = (ttftMap.get(1) || 0) + (ttftMap.get(2) || 0) / 1e9;
   const stream = (streamMap.get(1) || 0) + (streamMap.get(2) || 0) / 1e9;
 
@@ -3444,9 +3554,7 @@ function parseConversationMetrics(cascadeId, endpointOrDir, precomputedState = n
     }
 
     const { inc, userStepsCount, isSubagentWakeTurns, rawTurnSteps } = parentDbRes;
-    if (uncParent && Date.now() - tParentWallStart > 400) {
-      wslUncBackoffUntil = Date.now() + 45000;
-    }
+    markUncSlowIfExceeded(uncParent, tParentWallStart, 1500);
     setIncrementalMetrics(dbPath, inc);
 
     const { validItems: valid, totalIn, totalCache, totalOut, totalThink, totalResp } = inc;
@@ -3487,16 +3595,14 @@ function parseConversationMetrics(cascadeId, endpointOrDir, precomputedState = n
       if (childId === cascadeId) continue;
 
       const knownChildSig = childSnap.childSigs?.get(childId) || null;
-      const uncNowBlocked =
-        uncChildren && (Date.now() < wslUncBackoffUntil || Date.now() - tChildWallStart > 400);
-      if (uncChildren && Date.now() - tChildWallStart > 400 && Date.now() >= wslUncBackoffUntil) {
-        wslUncBackoffUntil = Date.now() + 45000;
-      }
+      const uncSliceExhausted = uncChildren && childSqlOpens > 0 && Date.now() - tChildWallStart >= 180;
+      const uncNowBlocked = uncChildren && (Date.now() < wslUncBackoffUntil || uncSliceExhausted);
       const allowUncachedOpen =
         !uncNowBlocked &&
         (childSqlOpens === 0 ||
           (childSqlOpens < maxChildOpens &&
-            performance.now() - tChildPerfStart < LINEAGE_TICK_MAX_MS));
+            performance.now() - tChildPerfStart < (uncChildren ? 180 : LINEAGE_TICK_MAX_MS)));
+      const tSingleChild = Date.now();
       const childRes = loadChildScalarMetrics(
         childId,
         conversationsDir,
@@ -3506,9 +3612,7 @@ function parseConversationMetrics(cascadeId, endpointOrDir, precomputedState = n
       if (!childRes.exists) continue;
       if (!childRes.fromCache && !childRes.deferred) {
         childSqlOpens += 1;
-        if (uncChildren && Date.now() - tChildWallStart > 400) {
-          wslUncBackoffUntil = Date.now() + 45000;
-        }
+        markUncSlowIfExceeded(uncChildren, tSingleChild, 1500);
       }
 
       let cm = null;
@@ -4027,7 +4131,7 @@ function taResolvePlanStateLookup(planTimeline) {
 }
 
 function taGetDbFileSig(dbPath) {
-  return getSqliteFileSig(dbPath, { trackUnc: true });
+  return getSqliteFileSig(dbPath, { trackUnc: true, uncBudgetMs: 2000 });
 }
 
 function taNormalizeSlashPath(raw) {
@@ -4189,33 +4293,46 @@ function taToLocalDateString(tsSec) {
 
 function taReadSummariesIndex(summariesDbPath) {
   const map = new Map();
-  if (!summariesDbPath || !fs.existsSync(summariesDbPath)) return map;
+  if (!summariesDbPath) return map;
+  const unc = isUncPath(summariesDbPath);
+  const t0 = Date.now();
+  if (!fs.existsSync(summariesDbPath)) {
+    markUncSlowIfExceeded(unc, t0, 2500);
+    return map;
+  }
   try {
-    withReadOnlyDb(summariesDbPath, 150, (db) => {
-      const rows = db
-        .prepare(
-          `SELECT conversation_id, title, workspace_uris, project_id, source, agent_name,
-                  parent_conversation_id, nesting_depth, last_modified_time
-           FROM conversation_summaries`
-        )
-        .all();
-      for (const r of rows) {
-        if (!r?.conversation_id) continue;
-        map.set(r.conversation_id, {
-          id: r.conversation_id,
-          title: String(r.title || '').trim(),
-          workspaceUris: String(r.workspace_uris || ''),
-          projectId: String(r.project_id || ''),
-          source: String(r.source || '') === 'CORTEX_TRAJECTORY_SOURCE_CLI' ? 'cli' : 'desktop',
-          agentName: String(r.agent_name || '').trim(),
-          parentId: String(r.parent_conversation_id || '').trim(),
-          nestingDepth: Number(r.nesting_depth || 0) || 0,
-          lastModifiedSec: taParseIsoSeconds(r.last_modified_time)
-        });
-      }
-    });
+    withReadOnlyDb(
+      summariesDbPath,
+      150,
+      (db) => {
+        const rows = db
+          .prepare(
+            `SELECT conversation_id, title, workspace_uris, project_id, source, agent_name,
+                    parent_conversation_id, nesting_depth, last_modified_time
+             FROM conversation_summaries`
+          )
+          .all();
+        for (const r of rows) {
+          if (!r?.conversation_id) continue;
+          map.set(r.conversation_id, {
+            id: r.conversation_id,
+            title: String(r.title || '').trim(),
+            workspaceUris: String(r.workspace_uris || ''),
+            projectId: String(r.project_id || ''),
+            source: String(r.source || '') === 'CORTEX_TRAJECTORY_SOURCE_CLI' ? 'cli' : 'desktop',
+            agentName: String(r.agent_name || '').trim(),
+            parentId: String(r.parent_conversation_id || '').trim(),
+            nestingDepth: Number(r.nesting_depth || 0) || 0,
+            lastModifiedSec: taParseIsoSeconds(r.last_modified_time)
+          });
+        }
+      },
+      { bypassStagingLru: true }
+    );
+    markUncSlowIfExceeded(unc, t0, 5000);
     return map;
   } catch {
+    markUncSlowIfExceeded(unc, t0, 5000);
     return null;
   }
 }
@@ -4669,7 +4786,7 @@ function taParseConversationDetailDb(dbPath, statInfo, prevCacheEntry = null) {
           firstSubagentType: lineageState.firstSubagentType
         }
       };
-    });
+    }, { bypassStagingLru: true });
   } catch (err) {
     return {
       ok: false,
@@ -4804,11 +4921,31 @@ function isPathInIncompleteDirs(filePath, incompletePrefixes) {
 
 async function queryTokenAnalytics(
   endpoint,
-  { maxDays = 365, force = false, nowSec = Math.floor(Date.now() / 1000) } = {}
+  {
+    maxDays = 365,
+    force = false,
+    silent = false,
+    _fgSeq = tokenAnalyticsFgAbortSeq,
+    nowSec = Math.floor(Date.now() / 1000),
+    _bgWarmup = false
+  } = {}
 ) {
-  lastTokenAnalyticsAccessMs = Date.now();
+  const isSilentWarmup = Boolean(silent && !force);
+  const isAborted = () => (_bgWarmup ? tokenAnalyticsBgAbort : _fgSeq !== tokenAnalyticsFgAbortSeq);
+  const queryStartMs = Date.now();
+  if (!_bgWarmup) {
+    lastTokenAnalyticsAccessMs = queryStartMs;
+    if (!isSilentWarmup && tokenAnalyticsWarmupTimer) {
+      clearTimeout(tokenAnalyticsWarmupTimer);
+      tokenAnalyticsWarmupTimer = null;
+    }
+  }
   const t0 = performance.now();
   await Promise.all([loadTokenAnalyticsDiskCacheIfNeeded(force), ensureWin32WslProbesWarmAsync(endpoint)]);
+  if (_bgWarmup && tokenAnalyticsBgAbort) {
+    return { ok: true, warmupOnly: true, aborted: true, warmupPending: true };
+  }
+  const scanBaseMs = Date.now();
   let sliceStartMs = performance.now();
   const primaryDir =
     endpoint?.conversationsDir || path.join(os.homedir(), endpoint?.geminiSubDir || '.gemini/antigravity', 'conversations');
@@ -4838,7 +4975,11 @@ async function queryTokenAnalytics(
 
   const summaries = new Map();
   const dbCandidateById = new Map(); // dbId -> { dbPath, sigInfo }
+  const allKnownDbIds = new Set();
   const incompleteDirPrefixes = new Set();
+  const activePaths = new Set();
+  let uncDeferredCount = 0;
+
   const wslConfiguredButOffline =
     process.platform === 'win32' &&
     !endpoint?.explicitConvDir &&
@@ -4853,7 +4994,12 @@ async function queryTokenAnalytics(
     }
   }
 
+  const statDeadlineMs = scanBaseMs + (_bgWarmup ? 3500 : isSilentWarmup ? 2000 : 4000);
   for (const convDir of candidateDirs) {
+    if (isAborted()) {
+      incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
+      break;
+    }
     const uncDir = isUncPath(convDir);
     if (uncDir && Date.now() < wslUncBackoffUntil) {
       incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
@@ -4866,7 +5012,7 @@ async function queryTokenAnalytics(
     } catch {
       dirExists = false;
     }
-    if (markUncSlowIfExceeded(uncDir, tDir) || (uncDir && Date.now() < wslUncBackoffUntil)) {
+    if (markUncSlowIfExceeded(uncDir, tDir, 2500) || (uncDir && Date.now() < wslUncBackoffUntil)) {
       incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
       if (!dirExists) continue;
     }
@@ -4881,8 +5027,18 @@ async function queryTokenAnalytics(
     let entries = [];
     try {
       const tRead = Date.now();
-      entries = fs.readdirSync(convDir).filter((name) => name.endsWith('.db')).sort();
-      if (markUncSlowIfExceeded(uncDir, tRead)) {
+      entries = fs
+        .readdirSync(convDir)
+        .filter((name) => name.endsWith('.db'))
+        .sort((a, b) => {
+          const tsA = summaries.get(a.slice(0, -3))?.lastModifiedSec || 0;
+          const tsB = summaries.get(b.slice(0, -3))?.lastModifiedSec || 0;
+          return tsB - tsA || a.localeCompare(b);
+        });
+      for (const fileName of entries) {
+        allKnownDbIds.add(fileName.slice(0, -3));
+      }
+      if (markUncSlowIfExceeded(uncDir, tRead, 2500)) {
         incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
       }
     } catch {
@@ -4890,17 +5046,32 @@ async function queryTokenAnalytics(
       entries = [];
     }
 
-    const dirStatLoopStartMs = Date.now();
     let statIter = 0;
+    const statYieldStep = uncDir ? 10 : 80;
     for (const fileName of entries) {
-      if (uncDir) {
-        if (Date.now() < wslUncBackoffUntil || markUncSlowIfExceeded(true, dirStatLoopStartMs)) {
-          incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
-          break;
-        }
+      if (isAborted()) {
+        incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
+        break;
       }
       const dbPath = path.join(convDir, fileName);
       const dbId = path.basename(fileName, '.db');
+      if (uncDir) {
+        const cachedUnc = force !== 'hard' ? tokenAnalyticsDbCache.get(dbPath) : null;
+        if ((_bgWarmup || isSilentWarmup) && cachedUnc?.parsed?.ok) {
+          activePaths.add(dbPath);
+          if (!_bgWarmup && !dbCandidateById.has(dbId)) {
+            dbCandidateById.set(dbId, { dbPath, sigInfo: { dbPath, sig: cachedUnc.sig, mtimeMs: 0 } });
+          }
+          continue;
+        }
+        if (Date.now() < wslUncBackoffUntil || Date.now() > statDeadlineMs) {
+          incompleteDirPrefixes.add(normalizeDirPrefix(convDir));
+          if (Date.now() >= wslUncBackoffUntil) {
+            uncDeferredCount += 1;
+          }
+          break;
+        }
+      }
       const sigInfo = taGetDbFileSig(dbPath);
       if (!sigInfo) {
         if (uncDir && Date.now() < wslUncBackoffUntil) {
@@ -4914,25 +5085,25 @@ async function queryTokenAnalytics(
         dbCandidateById.set(dbId, { dbPath, sigInfo });
       }
       statIter += 1;
-      if (statIter % 80 === 0 && performance.now() - sliceStartMs >= 16) {
+      if (statIter % statYieldStep === 0 && performance.now() - sliceStartMs >= 16) {
         await yieldEventLoop();
         sliceStartMs = performance.now();
       }
     }
   }
 
-  const activePaths = new Set();
   const parsedDbs = [];
   const failedDbs = [];
   let cacheHits = 0;
   let cacheMisses = 0;
+  let newlyCachedCount = 0;
   let missesSinceYield = 0;
 
-  // 若 UNC 目录因 400ms 预算中断未扫完，从既有缓存回填尚未 stat 到的会话库，避免 WSL 多库用户统计残缺
   if (incompleteDirPrefixes.size > 0 && force !== 'hard') {
     for (const [cachedPath, cachedItem] of tokenAnalyticsDbCache.entries()) {
       if (!cachedItem?.parsed?.ok || !isPathInIncompleteDirs(cachedPath, incompleteDirPrefixes)) continue;
       const dbId = cachedItem.parsed.dbId || path.basename(cachedPath, '.db');
+      allKnownDbIds.add(dbId);
       if (!dbCandidateById.has(dbId)) {
         activePaths.add(cachedPath);
         cacheHits += 1;
@@ -4941,21 +5112,28 @@ async function queryTokenAnalytics(
     }
   }
 
-  // 按最新修改时间优先解析，每处理 8 个未命中库或单切片达 16ms 即让出事件循环，保障主窗口胶囊与 BrowserWatcher 零阻塞
   const dbEntries = [...dbCandidateById.values()].sort(
     (a, b) => (b.sigInfo.mtimeMs || 0) - (a.sigInfo.mtimeMs || 0) || a.dbPath.localeCompare(b.dbPath)
   );
+  const parseDeadlineMs = Date.now() + (_bgWarmup ? 4500 : isSilentWarmup ? 2500 : 6000);
   for (const { dbPath, sigInfo } of dbEntries) {
+    if (isAborted()) {
+      incompleteDirPrefixes.add(normalizeDirPrefix(path.dirname(dbPath)));
+      break;
+    }
     activePaths.add(dbPath);
     const cached = force !== 'hard' ? tokenAnalyticsDbCache.get(dbPath) : null;
-    if (cached && cached.sig === sigInfo.sig) {
+    if (cached && (cached.sig === sigInfo.sig || _bgWarmup || isSilentWarmup)) {
       cacheHits += 1;
       parsedDbs.push(cached.parsed);
       continue;
     }
 
     const uncDb = isUncPath(dbPath);
-    if (uncDb && Date.now() < wslUncBackoffUntil) {
+    if (uncDb && (Date.now() < wslUncBackoffUntil || Date.now() > parseDeadlineMs)) {
+      if (Date.now() >= wslUncBackoffUntil) {
+        uncDeferredCount += 1;
+      }
       if (cached?.parsed) parsedDbs.push(cached.parsed);
       continue;
     }
@@ -4964,8 +5142,11 @@ async function queryTokenAnalytics(
     missesSinceYield += 1;
     const tDbStart = Date.now();
     const rawResult = taParseConversationDetailDb(dbPath, sigInfo, force !== 'hard' ? cached : null);
-    markUncSlowIfExceeded(uncDb, tDbStart);
+    markUncSlowIfExceeded(uncDb, tDbStart, 5000);
     if (rawResult.ok) {
+      if (!cached) {
+        newlyCachedCount += 1;
+      }
       const { _inc, ...compactParsed } = rawResult;
       const keepInc = _inc && Date.now() - (sigInfo.mtimeMs || 0) < 86400000 ? _inc : null;
       tokenAnalyticsDbCache.set(dbPath, { sig: sigInfo.sig, parsed: compactParsed, _inc: keepInc });
@@ -4976,7 +5157,7 @@ async function queryTokenAnalytics(
       failedDbs.push({ dbId: rawResult.dbId, error: rawResult.error });
     }
 
-    if (missesSinceYield >= 8 || performance.now() - sliceStartMs >= 16) {
+    if (missesSinceYield >= (uncDb ? 2 : 8) || performance.now() - sliceStartMs >= 16) {
       await yieldEventLoop();
       sliceStartMs = performance.now();
       missesSinceYield = 0;
@@ -4984,15 +5165,54 @@ async function queryTokenAnalytics(
   }
 
   let prunedCount = 0;
-  for (const oldPath of tokenAnalyticsDbCache.keys()) {
-    if (!activePaths.has(oldPath) && !isPathInIncompleteDirs(oldPath, incompleteDirPrefixes)) {
-      tokenAnalyticsDbCache.delete(oldPath);
-      prunedCount += 1;
+  if (!_bgWarmup) {
+    for (const oldPath of tokenAnalyticsDbCache.keys()) {
+      if (!activePaths.has(oldPath) && !isPathInIncompleteDirs(oldPath, incompleteDirPrefixes)) {
+        tokenAnalyticsDbCache.delete(oldPath);
+        prunedCount += 1;
+      }
     }
   }
 
   if (cacheMisses > 0 || prunedCount > 0 || force === 'hard') {
     scheduleTokenAnalyticsDiskPersist();
+  }
+
+  const canContinueWarmup =
+    uncDeferredCount > 0 &&
+    (_bgWarmup ? newlyCachedCount > 0 : newlyCachedCount > 0 || cacheMisses === 0) &&
+    !isAborted() &&
+    !SAFE_MODE &&
+    !RUN_ONCE &&
+    !daemonExiting &&
+    Date.now() >= wslUncBackoffUntil;
+
+  if (canContinueWarmup && !tokenAnalyticsWarmupTimer) {
+    tokenAnalyticsWarmupTimer = setTimeout(() => {
+      tokenAnalyticsWarmupTimer = null;
+      if (
+        daemonExiting ||
+        !activeConfig.enabled ||
+        !activeConfig.modules.tokenAnalytics ||
+        inFlightTokenAnalyticsPromise ||
+        inFlightBgWarmupPromise ||
+        Date.now() < wslUncBackoffUntil
+      ) {
+        return;
+      }
+      void runTokenAnalyticsBgWarmup(endpoint, maxDays);
+    }, 2000);
+    if (typeof tokenAnalyticsWarmupTimer.unref === 'function') tokenAnalyticsWarmupTimer.unref();
+  }
+
+  if (_bgWarmup) {
+    return {
+      ok: true,
+      warmupOnly: true,
+      newlyCachedCount,
+      deferredDbs: uncDeferredCount,
+      warmupPending: Boolean(canContinueWarmup || tokenAnalyticsWarmupTimer)
+    };
   }
 
   const cutoffSec = maxDays > 0 ? nowSec - maxDays * 86400 : 0;
@@ -5201,9 +5421,11 @@ async function queryTokenAnalytics(
     defaultMetric: 'weighted',
     elapsedMs: Number((performance.now() - t0).toFixed(2)),
     stats: {
-      dbCount: dbEntries.length,
+      dbCount: Math.max(allKnownDbIds.size, parsedDbs.length, dbEntries.length),
       scannedDbs: parsedDbs.length,
       failedDbs: failedDbs.length,
+      deferredDbs: uncDeferredCount,
+      warmupPending: Boolean(canContinueWarmup || tokenAnalyticsWarmupTimer),
       totalCalls,
       conversationCount: Object.keys(conversations).length,
       projectCount: activeProjects.length,
@@ -5217,18 +5439,56 @@ async function queryTokenAnalytics(
   };
 }
 
+function runTokenAnalyticsBgWarmup(endpoint, maxDays = 365) {
+  if (inFlightBgWarmupPromise || inFlightTokenAnalyticsPromise) {
+    return inFlightBgWarmupPromise;
+  }
+  tokenAnalyticsBgAbort = false;
+  const bgRun = queryTokenAnalytics(endpoint, { maxDays, force: false, _bgWarmup: true })
+    .catch(() => {})
+    .finally(() => {
+      if (inFlightBgWarmupPromise === bgRun) {
+        inFlightBgWarmupPromise = null;
+      }
+    });
+  inFlightBgWarmupPromise = bgRun;
+  return bgRun;
+}
+
 function runTokenAnalyticsQuery(endpoint, opts = {}) {
+  const isSilentPoll = Boolean(opts.silent && !opts.force);
+  if (!isSilentPoll && tokenAnalyticsWarmupTimer) {
+    clearTimeout(tokenAnalyticsWarmupTimer);
+    tokenAnalyticsWarmupTimer = null;
+  }
   const key = `${endpoint?.channel || 'default'}|${endpoint?.conversationsDir || ''}|${opts.maxDays || 365}`;
   if (!opts.force && inFlightTokenAnalyticsPromise && inFlightTokenAnalyticsKey === key) {
     return inFlightTokenAnalyticsPromise;
   }
+  if (!isSilentPoll && inFlightBgWarmupPromise) {
+    tokenAnalyticsBgAbort = true;
+  }
+  if (opts.force && inFlightTokenAnalyticsPromise) {
+    tokenAnalyticsFgAbortSeq += 1;
+  }
+  const myFgSeq = tokenAnalyticsFgAbortSeq;
+  const prevFgPromise = inFlightTokenAnalyticsPromise;
+  const prevBgPromise = inFlightBgWarmupPromise;
   const run = (async () => {
-    if (inFlightTokenAnalyticsPromise) {
+    if (prevBgPromise) {
       try {
-        await inFlightTokenAnalyticsPromise;
+        await prevBgPromise;
       } catch {}
     }
-    return queryTokenAnalytics(endpoint, opts);
+    if (!isSilentPoll) {
+      tokenAnalyticsBgAbort = false;
+    }
+    if (prevFgPromise) {
+      try {
+        await prevFgPromise;
+      } catch {}
+    }
+    return queryTokenAnalytics(endpoint, { ...opts, _fgSeq: myFgSeq });
   })();
   inFlightTokenAnalyticsKey = key;
   inFlightTokenAnalyticsPromise = run;
@@ -6981,10 +7241,11 @@ function attachTarget(target, endpoint) {
             const reqId = String(req?.reqId || '');
             const maxDays = Number(req?.maxDays) > 0 ? Number(req.maxDays) : 365;
             const force = req?.force === 'hard' ? 'hard' : Boolean(req?.force);
+            const silent = Boolean(req?.silent);
             void (async () => {
               let payloadJson = '';
               try {
-                const data = await runTokenAnalyticsQuery(endpoint, { maxDays, force });
+                const data = await runTokenAnalyticsQuery(endpoint, { maxDays, force, silent });
                 if (tokenAnalyticsLastJsonCache.dataRef === data && tokenAnalyticsLastJsonCache.jsonStr) {
                   payloadJson = tokenAnalyticsLastJsonCache.jsonStr;
                 } else {
@@ -8400,15 +8661,28 @@ async function sync() {
       trimPosixDaemonLogsIfNeeded();
       if (
         !inFlightTokenAnalyticsPromise &&
+        !inFlightBgWarmupPromise &&
         !tokenAnalyticsPersistTimer &&
-        (tokenAnalyticsDbCache.size > 0 || tokenAnalyticsSummariesCache.size > 0 || wslSqliteStagingCache.size > 0) &&
+        !tokenAnalyticsWarmupTimer &&
+        (tokenAnalyticsDbCache.size > 0 || tokenAnalyticsSummariesCache.size > 0) &&
         Date.now() - lastTokenAnalyticsAccessMs > 600000
       ) {
         tokenAnalyticsDbCache.clear();
         tokenAnalyticsSummariesCache.clear();
         tokenAnalyticsDiskLoaded = false;
         tokenAnalyticsLastJsonCache = { dataRef: null, jsonStr: '' };
-        cleanupWslSqliteStagingCache();
+      }
+      if (wslSqliteStagingCache.size > 0) {
+        if (attachedTargets.size === 0) {
+          cleanupWslSqliteStagingCache();
+        } else {
+          const idleNow = Date.now();
+          for (const [k, ent] of [...wslSqliteStagingCache.entries()]) {
+            if (idleNow - (ent?.lastUsedMs || 0) > 600000) {
+              removeWslStagingEntry(k);
+            }
+          }
+        }
       }
     }
     if (cachedExternalEditors.probedAt === 0 || cachedExternalEditors.platform !== process.platform) {

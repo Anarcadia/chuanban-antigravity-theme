@@ -1,5 +1,15 @@
 # Changelog
 
+## v6.0.5 (2026-11-26) — WSL2 Token Analytics Deadlock Fix & Native Preset State Machine Closure
+
+- **Resolved Windows + WSL2 400ms UNC Backoff Deadlocks Across Live Lineage & Token Analytics (`core/daemon.mjs` / `core/runtime.js`, PR #49)**:
+  - Decoupled cooperative multi-file slicing (`refreshLineageIndex` cursor slices + Token Analytics local deadlines `stat <= 4s`, `parse <= 6s` sorted by `conversation_summaries.db` recency) from single-call 9P stall circuit-breakers, eliminating cascading 45s `wslUncBackoffUntil` blackouts on WSL2 workspaces with `>160` conversation DBs.
+  - Added preemptible, livelock-free background micro-batch warmup (`runTokenAnalyticsBgWarmup` + `tokenAnalyticsFgAbortSeq`, `newlyCachedCount > 0` progress gate, zero-`statSync` cache skip, `bypassStagingLru` + active-WAL-only 6-slot staging isolation with per-entry 10m idle eviction, unified `dbCount` denominator, and automatic `4s` silent panel convergence while `warming…`).
+- **Fixed Dark-to-Original (`A`) Preset Switching & Follow System Closure (`core/runtime.js`, Issue #48)**:
+  - Clicking `A` (`Original Theme`) from dark mode while `Follow System` is off now triggers an internal native `light` click to exit `body.dark`, while keeping `Original Light · Original Dark` auto-switching intact when `Follow System` is enabled.
+- **Claude & GPT Quota Pool Alignment (`core/daemon.mjs` / `core/runtime.js`)**:
+  - Updated `thinkUnreported` detection to include `gpt-*` (`apiProvider` 31/32) alongside Claude models.
+
 ## v6.0.4 (2026-11-26) — Initial Global Lightweight Parallel Release
 
 - **Decoupled Pure-English Lightweight Architecture**:

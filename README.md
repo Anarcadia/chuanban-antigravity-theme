@@ -1,4 +1,4 @@
-# Chuanban Antigravity Theme (`v6.0.4` · Global Lightweight Edition)
+# Chuanban Antigravity Theme (`v6.0.5` · Global Lightweight Edition)
 
 > **Language Editions**: **English Lightweight Edition (Current)** · [简体中文完整汉化版 (`chuanban-antigravity-theme-patch`)](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)
 
