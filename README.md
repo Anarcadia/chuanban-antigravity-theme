@@ -30,6 +30,10 @@ Built specifically as a **pure-English, ultra-lightweight parallel edition**:
    - Real-time context window progress bar, token/s speed, TTFT, and cache hit tooltip right below the composer (including split panes & `/btw` side tabs; auto-hides on Remote SSH when no local DB exists).
    - **Settings → Local Extensions → Token Analytics**: Local-only SQLite attribution across 26-week activity heatmaps, models/quota pools, scenarios, projects, and expandable subagent trees.
 
+5. **Restrained, Non-Intrusive & Low-Risk Design**
+   - Injects CSS styles exclusively into the frontend rendering layer via local loopback (`127.0.0.1`) CDP without unpacking or modifying `app.asar`, fully preserving official client digital signatures and OS notarization.
+   - Built-in Token Analytics and the live metrics capsule strictly parse local on-disk SQLite session databases offline in read-only mode (`node:sqlite`), without reading system keychains or OAuth credentials, calling Google's internal private quota endpoints (such as `retrieveUserQuotaSummary`), or spoofing client identity headers (`User-Agent` / `clientInfo`), and without involving any CDP chat-flow automation, network proxy interception, multi-account switching, or cross-tool directory scanning (Note: while pure frontend runtime rendering-layer injection involves no network requests or credential interaction, it remains an unendorsed local modification gray area under literal client Terms of Service and is not zero-risk; supports one-command complete uninstallation and lossless restoration at any time).
+
 ---
 
 ## Quick Install (AI-Agent Guided or Manual CLI)
