@@ -7015,7 +7015,7 @@
         if (settingsBtn) settingsBtn.click();
       };
 
-      const OWN_TOKEN_SEL = '[data-ag-token-ui], [data-ag-metrics-pill], #ag-live-metrics-pill, #ag-live-metrics-tooltip';
+      const OWN_TOKEN_SEL = '[data-ag-token-ui], [data-ag-metrics-pill], #ag-live-metrics-pill, #ag-live-metrics-tooltip, [data-ag-plugin-ui], [data-ag-sb-ui], [data-ag-quota-ui]';
       function isOwnTokenNode(n) {
         return (
           n instanceof Element &&
@@ -7051,7 +7051,7 @@
       }
 
       const MODAL_FAST_SKIP_SEL =
-        '[data-markdown-root], [data-testid="conversation-view"], [id="antigravity.agentSidePanelInputBox"], .monaco-editor, .monaco-diff-editor, .view-lines, .code-line, .xterm, [data-ag-token-ui], [data-ag-metrics-pill], #ag-live-metrics-pill, #ag-live-metrics-tooltip';
+        '[data-markdown-root], [data-testid="conversation-view"], [id="antigravity.agentSidePanelInputBox"], .monaco-editor, .monaco-diff-editor, .view-lines, .code-line, .xterm, [data-ag-token-ui], [data-ag-metrics-pill], #ag-live-metrics-pill, #ag-live-metrics-tooltip, [data-ag-plugin-ui], [data-ag-sb-ui], [data-ag-quota-ui]';
       const MODAL_RELEVANT_SEL =
         '.settings-modal-container, .settings-modal-backdrop, [data-testid="settings-sidebar"], [role="dialog"]';
       const observedModalEls = typeof WeakSet !== 'undefined' ? new WeakSet() : null;

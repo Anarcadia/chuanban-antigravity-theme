@@ -60,7 +60,22 @@ node install.mjs verify
 All personal settings live in `~/.gemini/antigravity/theme-patch/user/` (`%USERPROFILE%\.gemini\antigravity\theme-patch\user\` on Windows) and are never overwritten on upgrade:
 - `user/config.json` — switch `preset`, `darkPreset`, `fontMode` (`"anthropic"` | `"native"`), `--ag-chat-font-size`, or toggle individual `modules` (`metrics`, `tokenAnalytics`, `contextMenu`, `composerWaxSeal`).
 - `user/custom.css` — custom CSS overrides.
-- `user/custom.js` — sandboxed JS hooks.
+- `user/custom.js` — sandboxed JS hooks (tag custom UI roots with `data-ag-plugin-ui="1"` for zero-overhead observer bypass).
+
+---
+
+## Community Add-ons (`user/` Layer · Optional)
+
+Independent community extensions that install cleanly into `user/custom.{js,css}` via idempotent marker blocks (preserved across theme upgrades, zero `core/` or `.asar` changes, and natively adapted to all 5 Chuanban presets + English UI):
+
+1. **Always-On Quota Bar & Pool Capsules** — [`ghang/ghang-antigravity-local-ui`](https://github.com/ghang/ghang-antigravity-local-ui) (by [@ghang](https://github.com/ghang))
+   - Displays live Gemini weekly / 5h quota progress bars or compact rings above Settings in the left sidebar, plus auto-appearing top-bar capsules for independent quota pools (`Claude`, `GPT`, `Argon`) and detailed hover breakdowns.
+   - **Install / Uninstall**: Clone the repo and run `node install.mjs install --json` (or `node install.mjs uninstall --json`).
+2. **Sidebar "Recent (15)" Time-Grouped View & Collapsed Project Badges** — [`wysxxx/antigravity-sidebar-enhance`](https://github.com/wysxxx/antigravity-sidebar-enhance) (by [@wysxxx](https://github.com/wysxxx))
+   - Adds a zero-height bell toggle in the Projects header to switch in-place to a single-line **Active / Today / Yesterday / Earlier** Recent view (with full native hover/context actions), plus aggregated pending/running/unread badges on collapsed project folders and independent switches in **Settings → Appearance**.
+   - **Install / Uninstall**: Clone the repo and run `node install.mjs install --json` (or `node install.mjs uninstall --json`).
+
+> *Disclaimer*: Community add-ons are independently maintained by their respective authors and read internal client React Fiber / Redux state at runtime. Run `node install.mjs verify --safe-mode` in this theme repository anytime to bypass `user/` scripts for troubleshooting.
 
 ## License
 

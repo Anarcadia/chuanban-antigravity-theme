@@ -1,5 +1,13 @@
 # Changelog
 
+## v6.0.6 (2026-11-28) — Two-Stage Transactional Hot-Upgrade Engine & Antigravity `2.36.0` Adaptation
+
+- **Added Dual-Mirror Read-Only Update Check & In-Place Transactional Hot-Upgrade (`install.mjs` / `core/daemon.mjs` / `core/runtime.js` / `core/theme.css`)**:
+  - Added lightweight `core-update-v6.0.6.zip` (~269 KB) & `latest.json` dual-mirror probing (`Cloudflare R2` + `GitHub Releases`, dual SHA-256 verification, symlink/NTFS Junction guards, once-per-24h background check with `modules.updateCheck: false` opt-out) and one-click **Update Now** in **Settings → Appearance**.
+  - Implemented 3-phase `upgrade.lock` (`download → commit → service_handoff`), multi-window live version advance verification, automatic rollback on failure without restarting the Antigravity client, and NTFS `EPERM/EBUSY` atomic rename retries.
+- **Full Antigravity `2.36.0` (`CL=1031268331`) UI & Performance Alignment (`core/theme.css` / `core/runtime.js` / `core/daemon.mjs`)**:
+  - Adapted maximized auxiliary-pane `.agy-floating-composer-pill` concentric radius (`22px` collapsed / `18px` expanded) and split-pane `resolveBoxCascadeId` UUID lookup; fixed Tailwind v4 `@layer utilities` `!bg-background/70` cascade inversion on boxed `[data-testid="agent-message-bubble"]` inline/block code via `@layer base` overrides (`--ag-bubble-*` escape hatches); fixed Settings search × Token Analytics tab navigation; ported virtualized Diff `.code-line` / `.view-lines` observer fast-skip and `[data-ag-plugin-ui]` / `[data-ag-sb-ui]` / `[data-ag-quota-ui]` `user/` add-on fast-skip.
+
 ## v6.0.5 (2026-11-26) — WSL2 Token Analytics Deadlock Fix & Native Preset State Machine Closure
 
 - **Resolved Windows + WSL2 400ms UNC Backoff Deadlocks Across Live Lineage & Token Analytics (`core/daemon.mjs` / `core/runtime.js`, PR #49)**:
