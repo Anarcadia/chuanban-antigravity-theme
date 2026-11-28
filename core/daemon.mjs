@@ -488,7 +488,7 @@ function resolveActiveChannelEndpoints(channelMode = 'auto', userCfg = {}) {
 // ============================================================================
 // 2. 动态构建注入载荷（支持 core/ + user/ 实时合并与热更新签名）
 // ============================================================================
-const BASE_VERSION = '20261128-v6.0.6-en';
+const BASE_VERSION = '20261128-v6.1.0-en';
 let cachedBundleSig = '';
 let cachedInjectScript = '';
 let cachedIframeInjectScript = '';
@@ -769,7 +769,7 @@ function getInstalledCurrentVersion() {
     return manifest.version.trim().replace(/^v/i, '');
   }
   const m = String(BASE_VERSION || '').match(/(\d+\.\d+\.\d+)/);
-  return m ? m[1] : '6.0.6';
+  return m ? m[1] : '6.1.0';
 }
 
 function formatCliPathArg(filePath) {
@@ -1486,10 +1486,17 @@ const HOST_CONFIG_PATH = path.join(os.homedir(), '.gemini', 'config', 'config.js
 let cachedHostCfgFileSig = '';
 let cachedHostThemeMode = null;
 
+function isValidDarkPresetName(val) {
+  return val === 'claude-warm' || val === 'onyx' || val === 'forest-night';
+}
+
 function normalizeDarkPresetValue(rawVal) {
   const s = String(rawVal || '').trim().toLowerCase();
   if (s === 'claude-warm' || s === 'warm-paper-night' || s === 'claude-night' || s === '暖炭') {
     return 'claude-warm';
+  }
+  if (s === 'forest-night' || s === 'qoder-dark' || s === 'forest-dark' || s === '幽林深色') {
+    return 'forest-night';
   }
   return 'onyx';
 }
@@ -1499,6 +1506,16 @@ function normalizeLightPresetValue(rawVal) {
   if (s === 'native' || s === 'stock' || s === 'original' || s === '原版配色') return 'native';
   if (s === 'absolutely' || s === 'claude-orange' || s === 'absolutely!' || s === 'absolutely！') {
     return 'absolutely';
+  }
+  if (
+    s === 'meadow' ||
+    s === 'qoder' ||
+    s === 'qoder-light' ||
+    s === 'grass-green' ||
+    s === '草墨石砚' ||
+    s === '清野草绿'
+  ) {
+    return 'meadow';
   }
   if (s === 'claude-desktop-purewhite' || s === 'claude-desktop-official' || s === 'claudedesktop 净白') {
     return 'claude-desktop-purewhite';
@@ -7407,7 +7424,7 @@ function attachTarget(target, endpoint) {
         const parentDarkPreset = resolveParentDarkPreset(target, endpoint) || '';
         const parentLightPreset = resolveParentLightPreset(target, endpoint) || '';
         const modeVal = parentMode === 'dark' || parentMode === 'light' ? parentMode : null;
-        const darkVal = parentDarkPreset === 'claude-warm' || parentDarkPreset === 'onyx' ? parentDarkPreset : null;
+        const darkVal = isValidDarkPresetName(parentDarkPreset) ? parentDarkPreset : null;
         const lightVal = parentLightPreset ? normalizeLightPresetValue(parentLightPreset) : null;
         return {
           script: `window.__ag_host_theme_mode=${modeVal ? JSON.stringify(modeVal) : 'null'};\nwindow.__ag_host_dark_preset=${darkVal ? JSON.stringify(darkVal) : 'null'};\nwindow.__ag_host_light_preset=${lightVal ? JSON.stringify(lightVal) : 'null'};\nwindow.__ag_host_ui_lang=${JSON.stringify(uiLangVal)};\n${cachedIframeInjectScript}`,
@@ -7701,7 +7718,7 @@ function attachTarget(target, endpoint) {
                   syncThemeToChildIframes(target.id, checkVal.mode);
                 }
               }
-              if (checkVal.darkPreset === 'claude-warm' || checkVal.darkPreset === 'onyx') {
+              if (isValidDarkPresetName(checkVal.darkPreset)) {
                 const prevDarkPreset = targetDarkPresets.get(target.id);
                 targetDarkPresets.set(target.id, checkVal.darkPreset);
                 if (prevDarkPreset !== checkVal.darkPreset) {
@@ -7782,7 +7799,7 @@ function attachTarget(target, endpoint) {
                 syncThemeToChildIframes(target.id, state.mode);
               }
             }
-            if (state.darkPreset === 'claude-warm' || state.darkPreset === 'onyx') {
+            if (isValidDarkPresetName(state.darkPreset)) {
               const prevDarkPreset = targetDarkPresets.get(target.id);
               targetDarkPresets.set(target.id, state.darkPreset);
               if (prevDarkPreset !== state.darkPreset) {

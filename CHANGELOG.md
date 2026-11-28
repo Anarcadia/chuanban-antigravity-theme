@@ -1,5 +1,12 @@
 # Changelog
 
+## [v6.1.0] - 2026-11-28 — Meadow Inkstone (`meadow`) & Forest Night (`forest-night`) Botanical Skins + 7-Slot Switcher
+
+- **Added Two Independent Modern Flat Botanical Skins (`meadow` & `forest-night`) and Upgraded Appearance Bar to 7 Slots (`core/theme.css` / `core/runtime.js` / `core/daemon.mjs` / `install.mjs`)**:
+  - **🌱 Meadow Inkstone (`meadow` · Light)**: Imperceptible isotropic `256×256` lossless opaque WebP micro-limestone canvas (`#FAFBF9`) paired with an inkstone outer shell/sidebar (`#E9EDE9`), forest-green primary accents (`#386B4B` / `#80C776`), `1px` flat composer, and all-green live metrics hover cards (preserving critical red alerts at `>= 90%`).
+  - **🌲 Forest Night (`forest-night` · Dark)**: Warm pine-charcoal canvas (`#181B18`) with moss-slate cards (`#202420`), 100% opaque `backdrop-filter: none` menus, and decoupled `Follow System` cross-pairing (`'Default Dark'` host `localStorage` masking).
+  - **Platform-Calibrated Sans-Serif Prose**: Switches chat prose to `Google Sans Flex` (`wdth: 100`, `slnt: -10` italics) while preserving `Anthropic Mono` code blocks; enables subtle ink-bleed on macOS (`darwin`) while enforcing 100% zero ink-bleed (`text-shadow: none !important`) and crisp `600` bold weights on Windows (`win32`) DirectWrite.
+
 ## v6.0.6 (2026-11-28) — Two-Stage Transactional Hot-Upgrade Engine & Antigravity `2.36.0` Adaptation
 
 - **Added Dual-Mirror Read-Only Update Check & In-Place Transactional Hot-Upgrade (`install.mjs` / `core/daemon.mjs` / `core/runtime.js` / `core/theme.css`)**:

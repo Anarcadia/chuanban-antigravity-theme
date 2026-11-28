@@ -1,4 +1,4 @@
-# Chuanban Antigravity Theme (`v6.0.6` · Global Lightweight Edition)
+# Chuanban Antigravity Theme (`v6.1.0` · Global Lightweight Edition)
 
 > **Language Editions**: **English Lightweight Edition (Current)** · [简体中文完整汉化版 (`chuanban-antigravity-theme-patch`)](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)
 
@@ -12,10 +12,10 @@ Built specifically as a **pure-English, ultra-lightweight parallel edition**:
 
 ## Key Features
 
-1. **Five-Preset Warm-Paper Palette & `Follow System` Pairing**
-   - **Morandi Mineral (Default)**: Warm Xuan-paper canvas paired with a crisp single-layer `2px` Slate-Mineral composer border (`#A3B5BA → #3D6470`).
-   - **Appearance Bar Switcher**: Switch instantly in **Settings → Appearance** between `[ A Original | ✳️ Absolutely! | MO Morandi | 📖 Warm Dark | 🌙 Dark ]` plus an independent **`Follow System`** light/dark auto-pairing toggle.
-   - Full Windows 11 `TitleBarOverlay` & `--custom-window-controls` high-contrast synchronization.
+1. **Seven-Preset Editorial & Flat Botanical Palettes + `Follow System` Pairing**
+   - **Morandi Mineral (`MO` · Default)**: Warm Xuan-paper canvas paired with a crisp single-layer `2px` Slate-Mineral composer border (`#A3B5BA → #3D6470`).
+   - **Meadow Inkstone (`🌱` · `meadow`) & Forest Night (`🌲` · `forest-night`)**: Fresh flat botanical light & dark skins featuring an imperceptible `256×256` lossless opaque limestone canvas (`#FAFBF9`) paired with an inkstone shell (`#E9EDE9`), `1px` forest-green composer, sans-serif prose (`Google Sans Flex`), 100% opaque menus, and crisp zero-ink-bleed rendering on Windows DirectWrite.
+   - **Appearance Bar Switcher**: Switch instantly in **Settings → Appearance** across `[ A Original | ✳️ Absolutely! | MO Morandi | 🌱 Meadow Inkstone | 🌲 Forest Night | 📖 Warm Dark | 🌙 Dark ]` plus an independent **`Follow System`** light/dark auto-pairing toggle and Windows 11 `TitleBarOverlay` synchronization.
 
 2. **Editorial Three-Layer Typography**
    - **UI Controls**: Native variable `Google Sans Flex` with optical weight balancing.

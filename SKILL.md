@@ -1,9 +1,9 @@
 ---
 name: chuanban-antigravity-theme
-description: Warm-paper editorial theme, Claude-inspired typography, compact context menus, live context metrics capsule, and local SQLite Token Analytics for Google Antigravity 2.0 (v6.0.6 Global English Lightweight Edition · compatible with Antigravity 2.36.0+ / 2.35.0 / 2.34.0+ on macOS, Windows, and Linux). Zero `.asar` tampering, zero npm dependencies, <1 MB font download (or 0 MB pure native mode), 5-preset appearance switcher with Follow System pairing, and 2.5s hot-reload user layer. Trigger when the user asks to install, upgrade, customize, or troubleshoot the Chuanban Antigravity Theme.
+description: Warm-paper editorial theme, Claude-inspired typography, compact context menus, live context metrics capsule, and local SQLite Token Analytics for Google Antigravity 2.0 (v6.1.0 Global English Lightweight Edition · compatible with Antigravity 2.36.0+ / 2.35.0 / 2.34.0+ on macOS, Windows, and Linux). Zero `.asar` tampering, zero npm dependencies, <1 MB font download (or 0 MB pure native mode), 5-preset appearance switcher with Follow System pairing, and 2.5s hot-reload user layer. Trigger when the user asks to install, upgrade, customize, or troubleshoot the Chuanban Antigravity Theme.
 ---
 
-# Chuanban Antigravity Theme (v6.0.6 · Global Lightweight Edition — AI Agent Deployment Contract)
+# Chuanban Antigravity Theme (v6.1.0 · Global Lightweight Edition — AI Agent Deployment Contract)
 
 ## 0. Mandatory AI Agent Onboarding & Adaptive Language Protocol
 
@@ -21,7 +21,7 @@ description: Warm-paper editorial theme, Claude-inspired typography, compact con
 - **Non-Invasive Loopback CDP Runtime Injection**: Never modifies `app.asar`, never breaks macOS/Windows code signing, requires zero third-party `npm` packages.
 - **Five-Preset Appearance Bar & Follow System**:
   - Default **`"morandi"`** (Warm Xuan-paper canvas × Slate-Mineral single `2px` composer border);
-  - Embedded in **Settings → Appearance**: **`[ A Original | ✳️ Absolutely! | MO Morandi | 📖 Warm Dark | 🌙 Dark ]`** + **`Follow System`** automatic light/dark pairing toggle, synced seamlessly with Windows `TitleBarOverlay` (`--custom-window-controls`) and Swarm subframes.
+  - Embedded in **Settings → Appearance**: **`[ A Original | ✳️ Absolutely! | MO Morandi | 🌱 Meadow Inkstone | 🌲 Forest Night | 📖 Warm Dark | 🌙 Dark ]`** + **`Follow System`** automatic light/dark pairing toggle, synced seamlessly with Windows `TitleBarOverlay` (`--custom-window-controls`) and Swarm subframes.
 - **Two Ultra-Light Font Modes (`< 1 MB` or `0 MB`)**:
   - **`--font-mode anthropic` (Default, `< 1 MB` total)**: UI controls use Antigravity's native variable `Google Sans Flex`; chat prose uses `Anthropic Serif`; code, inline file pills, and composer use `Anthropic Mono`. Automatically fetched from Cloudflare R2 / GitHub Release mirrors with SHA-256 verification.
   - **`--font-mode native` (`0 MB` instant install)**: Zero font downloads — uses native `Google Sans Flex` and system monospace throughout.
