@@ -6943,7 +6943,7 @@
               if (!(t instanceof Element) || t.closest('[data-ag-token-ui]')) return;
               if (
                 t.closest(
-                  '[data-testid="settings-search-input"], button[aria-label="Clear search"], [data-testid="settings-app-version-copy"], [data-testid="settings-app-version-caption"], [data-testid="settings-upload-debug-bundle-button"]'
+                  '[data-testid="settings-search-input"], button[aria-label="Clear search"], button[data-ag-orig-aria-label="Clear search"], [data-testid="settings-app-version-copy"], [data-testid="settings-app-version-caption"], [data-testid="settings-upload-debug-bundle-button"]'
                 )
               ) {
                 return;
