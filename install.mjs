@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * chuanban-antigravity-theme-patch · 一键安装、自检、CDP 接力重启、安全模式验证、打包与回滚 CLI (install.mjs)
+ * chuanban-antigravity-theme · 一键安装、自检、CDP 接力重启、安全模式验证、打包与回滚 CLI (install.mjs)
  *
  * 支持子命令：
  *   node install.mjs install        [--channel auto|stable|insiders] [--preset native|morandi|absolutely|claude-desktop-purewhite|vintage-deep] [--dark-preset onyx|claude-warm] [--sync-user] [--with-launcher] [--target-dir <dir>]
+ *   node install.mjs upgrade        [--check] [--dry-run] [--version <vX.Y.Z>] [--mirror cloudflare-r2|github-release] [--force] [--target-dir <dir>] [--manifest-url <url>]
  *   node install.mjs relaunch       [--channel auto|stable|insiders] [--force] [--target-dir <dir>]
  *   node install.mjs download-fonts [--dir <download-dir>] [--all] [--force] [--super-ttc]
  *   node install.mjs install-fonts  --auto-download [--dir <download-dir>] [--force] [--super-ttc] [--retire-super-ttc]
@@ -23,7 +24,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { execSync, spawn, spawnSync } from 'node:child_process';
+import { execFile, execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -43,11 +44,52 @@ const SARASA_GITHUB_RELEASES_URL = 'https://github.com/be5invis/Sarasa-Gothic/re
 const NOTION_GUIDE_URL = 'https://chuanban.notion.site/chuanban-antigravity-theme-patch-db7c5846f37546be9481cd791aed0554';
 const GITHUB_REPO_URL = 'https://github.com/Anarcadia/chuanban-antigravity-theme';
 const CHINESE_EDITION_REPO_URL = 'https://github.com/Anarcadia/chuanban-antigravity-theme-patch';
+const GITHUB_RELEASES_LATEST_URL = `${GITHUB_REPO_URL}/releases/latest`;
+const R2_UPDATE_BASE_URL = 'https://img.chuanban.cc/themes/chuanban-antigravity-en';
+const UPDATE_MANIFEST_MIRRORS = [
+  { id: 'cloudflare-r2', url: `${R2_UPDATE_BASE_URL}/latest.json` },
+  { id: 'github-release', url: `${GITHUB_REPO_URL}/releases/latest/download/latest.json` }
+];
 const R2_FONT_MIRROR_BASE_URL = 'https://img.chuanban.cc/fonts/chuanban-suite';
 const GITHUB_FONT_MIRROR_TAG = 'fonts-sarasa-v1.0.43';
-const GITHUB_FONT_MIRROR_BASE_URL = `${GITHUB_REPO_URL}/releases/download/${GITHUB_FONT_MIRROR_TAG}`;
+const GITHUB_FONT_MIRROR_BASE_URL = `${CHINESE_EDITION_REPO_URL}/releases/download/${GITHUB_FONT_MIRROR_TAG}`;
 const R2_SARASA_SPLIT_URL = `${R2_FONT_MIRROR_BASE_URL}/Windows-Sarasa-Split-SC-TTF-v1.0.43.zip`;
 const GITHUB_SARASA_SPLIT_URL = `${GITHUB_FONT_MIRROR_BASE_URL}/Windows-Sarasa-Split-SC-TTF-v1.0.43.zip`;
+
+function isLoopbackHttpUrl(urlStr) {
+  try {
+    const u = new URL(String(urlStr || '').trim());
+    return (
+      u.protocol === 'http:' &&
+      (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedUpdateUrl(urlStr, { allowLoopbackOrigin = null } = {}) {
+  try {
+    const u = new URL(String(urlStr || '').trim());
+    if (allowLoopbackOrigin && u.origin === allowLoopbackOrigin && isLoopbackHttpUrl(u.href)) {
+      return true;
+    }
+    if (u.protocol !== 'https:') return false;
+    if (u.hostname === 'img.chuanban.cc' && u.pathname.startsWith('/themes/chuanban-antigravity-en/')) {
+      return true;
+    }
+    if (
+      u.hostname === 'github.com' &&
+      (u.pathname === '/Anarcadia/chuanban-antigravity-theme/releases' ||
+        u.pathname.startsWith('/Anarcadia/chuanban-antigravity-theme/releases/'))
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 function buildGoogleDriveDirectUrl(fileId) {
   return `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
@@ -211,10 +253,16 @@ function buildManifest(baseDir = __dirname) {
       bytes: stat.size
     };
   }
+  const targetVersion = '6.0.6';
+  const daemonSrc = fs.readFileSync(path.join(coreDir, 'daemon.mjs'), 'utf8');
+  if (!daemonSrc.includes(`-v${targetVersion}`)) {
+    throw new Error(`core/daemon.mjs BASE_VERSION does not match manifest version v${targetVersion}`);
+  }
   const manifest = {
     name: 'chuanban-antigravity-theme',
-    version: '6.0.5',
+    version: targetVersion,
     minNodeVersion: '22.0.0',
+    minAntigravityVersion: '2.34.0',
     fullMetricsNodeVersion: '22.13.0',
     distribution: {
       notionGuide: NOTION_GUIDE_URL,
@@ -228,27 +276,7 @@ function buildManifest(baseDir = __dirname) {
   return manifest;
 }
 
-function buildDistZip(baseDir = __dirname) {
-  const manifest = buildManifest(baseDir);
-  const distDir = path.join(baseDir, 'dist');
-  fs.mkdirSync(distDir, { recursive: true });
-  const zipName = `${manifest.name}-v${manifest.version}.zip`;
-  const zipPath = path.join(distDir, zipName);
-  if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-
-  const includeItems = [
-    'LICENSE',
-    'SKILL.md',
-    'README.md',
-    'CHANGELOG.md',
-    'install.mjs',
-    '.gitattributes',
-    '.gitignore',
-    'core',
-    'user',
-    'assets'
-  ].filter((item) => fs.existsSync(path.join(baseDir, item)));
-
+function collectPackEntries(baseDir, includeItems) {
   const allowedUserFiles = new Set(['config.json', 'custom.css', 'custom.js', 'i18n.override.json']);
   const skipNames = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
   const entriesToPack = [];
@@ -269,6 +297,12 @@ function buildDistZip(baseDir = __dirname) {
   for (const item of includeItems) {
     collectEntries(item.replace(/\\/g, '/'));
   }
+  return entriesToPack;
+}
+
+function packAndVerifyZip(baseDir, zipPath, entriesToPack, manifest) {
+  const zipName = path.basename(zipPath);
+  if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
   if (process.platform === 'win32') {
     const listTmpPath = path.join(os.tmpdir(), `ag-pack-entries-${process.pid}-${Date.now()}.json`);
@@ -368,7 +402,112 @@ function buildDistZip(baseDir = __dirname) {
       }
     }
   }
-  return { zipPath, version: manifest.version, filesVerified: Object.keys(manifest.files).length };
+  const st = fs.statSync(zipPath);
+  return { zipPath, filename: zipName, bytes: st.size, sha256: sha256File(zipPath) };
+}
+
+function extractChangelogHighlights(baseDir, version) {
+  const clPath = path.join(baseDir, 'CHANGELOG.md');
+  if (!fs.existsSync(clPath)) return [];
+  try {
+    const lines = fs.readFileSync(clPath, 'utf8').split(/\r?\n/);
+    const cleanVer = String(version || '').replace(/^v/i, '');
+    let inSection = false;
+    const bullets = [];
+    for (const line of lines) {
+      if (/^##\s+\[/.test(line)) {
+        if (inSection) break;
+        if (line.includes(`[v${cleanVer}]`) || line.includes(`[${cleanVer}]`)) {
+          inSection = true;
+        }
+        continue;
+      }
+      if (!inSection) continue;
+      if (line.startsWith('- ')) {
+        const clean = line
+          .slice(2)
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+          .replace(/`([^`]+)`/g, '$1')
+          .replace(/[：:]\s*$/, '')
+          .trim();
+        if (clean) bullets.push(clean.length > 140 ? clean.slice(0, 137) + '...' : clean);
+        if (bullets.length >= 4) break;
+      }
+    }
+    return bullets;
+  } catch {
+    return [];
+  }
+}
+
+function buildDistZip(baseDir = __dirname, { updateBundleOnly = false } = {}) {
+  const manifest = buildManifest(baseDir);
+  const distDir = path.join(baseDir, 'dist');
+  fs.mkdirSync(distDir, { recursive: true });
+
+  const fullInclude = ['LICENSE', 'SKILL.md', 'README.md', 'CHANGELOG.md', 'install.mjs', '.gitattributes', '.gitignore', 'core', 'user', 'assets'].filter((item) =>
+    fs.existsSync(path.join(baseDir, item))
+  );
+  const slimInclude = ['LICENSE', 'SKILL.md', 'install.mjs', 'core', 'user'].filter((item) =>
+    fs.existsSync(path.join(baseDir, item))
+  );
+
+  let fullInfo = null;
+  if (!updateBundleOnly) {
+    const fullZipPath = path.join(distDir, `${manifest.name}-v${manifest.version}.zip`);
+    fullInfo = packAndVerifyZip(baseDir, fullZipPath, collectPackEntries(baseDir, fullInclude), manifest);
+  }
+
+  const updateZipName = `core-update-v${manifest.version}.zip`;
+  const updateZipPath = path.join(distDir, updateZipName);
+  const updateInfo = packAndVerifyZip(baseDir, updateZipPath, collectPackEntries(baseDir, slimInclude), manifest);
+
+  const tag = `v${manifest.version}`;
+  const latestPayload = {
+    schemaVersion: 1,
+    name: manifest.name,
+    channel: 'stable',
+    version: manifest.version,
+    releasedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    minNodeVersion: manifest.minNodeVersion || '22.0.0',
+    minAntigravityVersion: manifest.minAntigravityVersion || '2.34.0',
+    changelog: extractChangelogHighlights(baseDir, manifest.version),
+    coreUpdateBundle: {
+      filename: updateInfo.filename,
+      bytes: updateInfo.bytes,
+      sha256: updateInfo.sha256,
+      mirrors: [
+        { id: 'cloudflare-r2', url: `${R2_UPDATE_BASE_URL}/${updateInfo.filename}` },
+        { id: 'github-release', url: `${GITHUB_REPO_URL}/releases/download/${tag}/${updateInfo.filename}` }
+      ]
+    },
+    ...(fullInfo
+      ? {
+          fullBundle: {
+            filename: fullInfo.filename,
+            bytes: fullInfo.bytes,
+            sha256: fullInfo.sha256,
+            mirrors: [
+              { id: 'github-release', url: `${GITHUB_REPO_URL}/releases/download/${tag}/${fullInfo.filename}` }
+            ]
+          }
+        }
+      : {}),
+    fullReleaseUrl: `${GITHUB_REPO_URL}/releases/tag/${tag}`
+  };
+  const latestJsonPath = path.join(distDir, 'latest.json');
+  fs.writeFileSync(latestJsonPath, JSON.stringify(latestPayload, null, 2) + '\n', 'utf8');
+
+  return {
+    zipPath: fullInfo ? fullInfo.zipPath : updateInfo.zipPath,
+    ...(fullInfo ? { fullZipPath: fullInfo.zipPath, fullBytes: fullInfo.bytes } : {}),
+    updateZipPath: updateInfo.zipPath,
+    updateBytes: updateInfo.bytes,
+    latestJsonPath,
+    version: manifest.version,
+    filesVerified: Object.keys(manifest.files).length
+  };
 }
 
 function verifyCoreIntegrity(baseDir = __dirname) {
@@ -566,7 +705,16 @@ function readHostVersionAndProcesses(channel = 'auto') {
     const desktopOverride = path.join(home, '.local', 'share', 'applications', 'antigravity.desktop');
     launcherInstalled =
       fs.existsSync(desktopOverride) && fs.readFileSync(desktopOverride, 'utf8').includes('--remote-debugging-port');
-    const pkgCandidates = ['/usr/share/antigravity/resources/app/package.json', '/opt/Antigravity/resources/app/package.json'];
+    const pkgCandidates = [];
+    if (allowStable) {
+      pkgCandidates.push('/usr/share/antigravity/resources/app/package.json', '/opt/Antigravity/resources/app/package.json');
+    }
+    if (allowInsiders) {
+      pkgCandidates.push(
+        '/usr/share/antigravity-insiders/resources/app/package.json',
+        '/opt/Antigravity - Insiders/resources/app/package.json'
+      );
+    }
     for (const pkgPath of pkgCandidates) {
       if (fs.existsSync(pkgPath)) {
         try {
@@ -1123,6 +1271,7 @@ async function inspectLiveWindow(portFileOrEnv, fallbackPort = 9222) {
   let selected = null;
   let firstHostCandidate = null;
   let firstNullCandidate = null;
+  const hostPages = [];
 
   for (const candidate of pages) {
     const rawState = await evaluatePageState(candidate);
@@ -1136,9 +1285,9 @@ async function inspectLiveWindow(portFileOrEnv, fallbackPort = 9222) {
     const cleanState = { ...rawState };
     delete cleanState.__isHost;
     if (isHost) {
-      if (cleanState.hasStyle === true) {
+      hostPages.push({ targetId: candidate.id, title: candidate.title, state: cleanState });
+      if (!selected && cleanState.hasStyle === true) {
         selected = { page: candidate, state: cleanState };
-        break;
       }
       if (!firstHostCandidate) {
         firstHostCandidate = { page: candidate, state: cleanState };
@@ -1150,12 +1299,14 @@ async function inspectLiveWindow(portFileOrEnv, fallbackPort = 9222) {
     selected = firstHostCandidate || firstNullCandidate;
   }
   if (!selected) {
-    return { reachable: true, port, pages: 0, reason: 'No active workbench page target' };
+    return { reachable: true, port, pages: 0, hostPages: [], reason: 'No active workbench page target' };
   }
 
   return {
     reachable: true,
     port,
+    pages: hostPages.length > 0 ? hostPages.length : 1,
+    hostPages,
     targetId: selected.page.id,
     title: selected.page.title,
     state: selected.state
@@ -1247,9 +1398,9 @@ function ensureCdpLaunchers(channel = 'auto', options = {}) {
           '  <key>CFBundlePackageType</key>',
           '  <string>APPL</string>',
           '  <key>CFBundleShortVersionString</key>',
-          '  <string>6.0.5</string>',
+          '  <string>6.0.6</string>',
           '  <key>CFBundleVersion</key>',
-          '  <string>605</string>',
+          '  <string>606</string>',
           ...(iconBase ? ['  <key>CFBundleIconFile</key>', `  <string>${iconBase}</string>`] : []),
           '  <key>LSMinimumSystemVersion</key>',
           '  <string>12.0</string>',
@@ -1777,6 +1928,7 @@ async function runDoctor() {
       ...(sourceSync && !sourceSync.sameDirectory ? { sourceSync } : {})
     },
     keepAliveTask: inspectWindowsKeepAliveTask(targetDir),
+    update: buildDoctorUpdateSection(targetDir, env),
     liveWindow: live
   };
 
@@ -2061,6 +2213,8 @@ function registerSystemService(targetDir, wrapperDaemon) {
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>AbandonProcessGroup</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>/tmp/antigravity-font-daemon.log</string>
     <key>StandardErrorPath</key>
@@ -2136,13 +2290,16 @@ After=default.target
 ExecStart="${serviceNodeExec}" --disable-warning=ExperimentalWarning "${wrapperDaemon}"
 Restart=always
 RestartSec=3
+KillMode=process
 
 [Install]
 WantedBy=default.target
 `;
     fs.writeFileSync(serviceFile, unitContent, 'utf8');
     try {
-      execSync('systemctl --user daemon-reload && systemctl --user enable --now antigravity-theme.service 2>/dev/null || true');
+      execSync(
+        'systemctl --user daemon-reload && (systemctl --user enable antigravity-theme.service 2>/dev/null || true) && systemctl --user restart antigravity-theme.service 2>/dev/null || true'
+      );
     } catch {}
     return { platform: 'linux', serviceFile, runningNow: true };
   }
@@ -2558,6 +2715,7 @@ async function runInstall() {
     'metrics',
     'composerWaxSeal',
     'contextMenu',
+    'updateCheck',
     'deadlockHealer',
     'coldBootHealer',
     'zoomShortcuts',
@@ -2610,8 +2768,12 @@ async function runInstall() {
       { encoding: 'utf8', mode: 0o755 }
     );
 
-    // 注册/更新跨平台自启服务
-    serviceInfo = registerSystemService(targetDir, wrapperDaemon);
+    // 注册/更新跨平台自启服务（热升级阶段 A 传入 --skip-service-restart 时先执行 --once 实机验活，验收通过后再由外层统一重启服务）
+    if (hasFlag('--skip-service-restart')) {
+      serviceInfo = { skipped: true, reason: 'skip-service-restart' };
+    } else {
+      serviceInfo = registerSystemService(targetDir, wrapperDaemon);
+    }
 
     // 立即执行一次 --once 同步注入
     spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', realDaemon, '--once'], {
@@ -3404,36 +3566,39 @@ async function runRollback() {
   // 重启守护进程并立即执行一次 --once 重新注入（沙箱 --target-dir 隔离模式下跳过全局服务干预）
   const realDaemon = path.join(targetCore, 'daemon.mjs');
   const wrapperDaemon = path.join(os.homedir(), '.gemini', 'antigravity', 'scripts', 'antigravity-font-daemon.mjs');
+  const skipServiceRestart = hasFlag('--skip-service-restart');
   if (!isCustomSandboxTarget) {
-    if (process.platform === 'darwin') {
-      const uid = process.getuid ? process.getuid() : 501;
-      try {
-        execSync(`launchctl kickstart -k gui/${uid}/com.antigravity.customfont 2>/dev/null || launchctl kickstart -k gui/${uid}/com.antigravity.theme 2>/dev/null || true`);
-      } catch {}
-    } else if (process.platform === 'linux') {
-      try {
-        execSync('systemctl --user restart antigravity-theme.service 2>/dev/null || true');
-      } catch {}
-    } else if (process.platform === 'win32') {
-      stopRunningDaemonProcesses();
-      let restartedViaTask = false;
-      try {
-        const r = spawnSync('schtasks', ['/Run', '/TN', 'AntigravityThemeDaemon'], {
-          stdio: 'ignore',
-          windowsHide: true
-        });
-        restartedViaTask = r.status === 0;
-      } catch {}
-      if (!restartedViaTask) {
+    if (!skipServiceRestart) {
+      if (process.platform === 'darwin') {
+        const uid = process.getuid ? process.getuid() : 501;
         try {
-          const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', fs.existsSync(wrapperDaemon) ? wrapperDaemon : realDaemon], {
-            cwd: os.homedir(),
-            detached: true,
+          execSync(`launchctl kickstart -k gui/${uid}/com.antigravity.customfont 2>/dev/null || launchctl kickstart -k gui/${uid}/com.antigravity.theme 2>/dev/null || true`);
+        } catch {}
+      } else if (process.platform === 'linux') {
+        try {
+          execSync('systemctl --user restart antigravity-theme.service 2>/dev/null || true');
+        } catch {}
+      } else if (process.platform === 'win32') {
+        stopRunningDaemonProcesses();
+        let restartedViaTask = false;
+        try {
+          const r = spawnSync('schtasks', ['/Run', '/TN', 'AntigravityThemeDaemon'], {
             stdio: 'ignore',
             windowsHide: true
           });
-          child.unref();
+          restartedViaTask = r.status === 0;
         } catch {}
+        if (!restartedViaTask) {
+          try {
+            const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', fs.existsSync(wrapperDaemon) ? wrapperDaemon : realDaemon], {
+              cwd: os.homedir(),
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true
+            });
+            child.unref();
+          } catch {}
+        }
       }
     }
     spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', realDaemon, '--once'], {
@@ -3457,12 +3622,107 @@ async function runRollback() {
   );
 }
 
-let _cachedWinSystemProxy = undefined;
-function detectWindowsSystemProxy() {
-  if (process.platform !== 'win32') return null;
-  if (_cachedWinSystemProxy !== undefined) return _cachedWinSystemProxy;
-  _cachedWinSystemProxy = null;
-  const envHasProxy = Boolean(
+// ============================================================================
+// 2.6 更新缓存诊断、双源清单探测与事务性自举升级 (upgrade)
+// ============================================================================
+function getUpdateCheckCachePath(targetDir) {
+  return path.join(targetDir, '.cache', 'update-check.json');
+}
+
+function readUpdateCheckCache(targetDir) {
+  const p = getUpdateCheckCachePath(targetDir);
+  if (!fs.existsSync(p)) return null;
+  try {
+    const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeUpdateCheckCache(targetDir, data) {
+  const cachePath = getUpdateCheckCachePath(targetDir);
+  const cacheDir = path.dirname(cachePath);
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const tmpPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmpPath, cachePath);
+  } catch {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
+function readInstalledCoreManifest(targetDir) {
+  const mp = path.join(targetDir, 'core', 'manifest.json');
+  if (!fs.existsSync(mp)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(mp, 'utf8').replace(/^\uFEFF/, ''));
+  } catch {
+    return null;
+  }
+}
+
+function isUpdateAvailableVersion(currentVer, candidateVer) {
+  const curTuple = extractBaseSemverTuple(currentVer);
+  const candTuple = extractBaseSemverTuple(candidateVer);
+  if (!curTuple || !candTuple) {
+    return Boolean(candidateVer && currentVer && String(candidateVer).replace(/^v/i, '') !== String(currentVer).replace(/^v/i, ''));
+  }
+  return compareSemverTuples(candTuple, curTuple) > 0;
+}
+
+function buildDoctorUpdateSection(targetDir, env = null) {
+  const manifest = readInstalledCoreManifest(targetDir);
+  const current = manifest?.version ? String(manifest.version) : null;
+  let updateCheckEnabled = true;
+  const userCfgPath = path.join(targetDir, 'user', 'config.json');
+  if (fs.existsSync(userCfgPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(userCfgPath, 'utf8').replace(/^\uFEFF/, ''));
+      if (cfg?.modules && typeof cfg.modules.updateCheck === 'boolean') {
+        updateCheckEnabled = cfg.modules.updateCheck;
+      }
+    } catch {}
+  }
+  const cache = readUpdateCheckCache(targetDir);
+  const latest = cache?.latestVersion ? String(cache.latestVersion) : null;
+  const dismissedVersion = cache?.dismissedVersion ? String(cache.dismissedVersion) : null;
+  const minAntigravityVersion =
+    typeof cache?.minAntigravityVersion === 'string' && cache.minAntigravityVersion.trim()
+      ? cache.minAntigravityVersion.trim()
+      : null;
+  const minNodeVersion =
+    typeof cache?.minNodeVersion === 'string' && cache.minNodeVersion.trim() ? cache.minNodeVersion.trim() : null;
+  const hostAppVersion = env?.appVersion || cache?.hostAppVersion || null;
+  const newer = Boolean(latest && current && isUpdateAvailableVersion(current, latest));
+  const hostCompatible = !minAntigravityVersion || !hostAppVersion || semverSatisfiesMin(hostAppVersion, minAntigravityVersion);
+  const nodeCompatible = !minNodeVersion || semverSatisfiesMin(process.versions.node, minNodeVersion);
+  const available = Boolean(newer && hostCompatible && nodeCompatible);
+  const dismissed = Boolean(available && dismissedVersion && dismissedVersion === latest);
+  return {
+    enabled: updateCheckEnabled,
+    current,
+    latest,
+    available,
+    incompatibleHost: Boolean(newer && !hostCompatible),
+    incompatibleNode: Boolean(newer && !nodeCompatible),
+    minAntigravityVersion,
+    minNodeVersion,
+    hostAppVersion,
+    dismissed,
+    checkedAt: cache?.checkedAt || null,
+    source: cache?.source || null,
+    releaseUrl: cache?.releaseUrl || GITHUB_RELEASES_LATEST_URL,
+    upgradeCommand: `node ${JSON.stringify(path.join(targetDir, 'install.mjs'))} upgrade`
+  };
+}
+
+function hasProcessProxyEnv() {
+  return Boolean(
     process.env.HTTPS_PROXY ||
       process.env.https_proxy ||
       process.env.HTTP_PROXY ||
@@ -3470,7 +3730,1287 @@ function detectWindowsSystemProxy() {
       process.env.ALL_PROXY ||
       process.env.all_proxy
   );
-  if (envHasProxy) return null;
+}
+
+function parseWindowsProxyFromRegStdout(out) {
+  const text = String(out || '');
+  if (!text) return null;
+  const enabledMatch = text.match(/ProxyEnable\s+REG_DWORD\s+0x([0-9a-f]+)/i);
+  if (!enabledMatch || parseInt(enabledMatch[1], 16) !== 1) return null;
+  const serverMatch = text.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i);
+  if (!serverMatch) return null;
+  const raw = serverMatch[1].trim();
+  if (!raw) return null;
+  let picked = raw;
+  if (raw.includes('=')) {
+    const pairs = raw.split(';').map((s) => s.trim()).filter(Boolean);
+    const map = Object.create(null);
+    for (const p of pairs) {
+      const idx = p.indexOf('=');
+      if (idx > 0) map[p.slice(0, idx).trim().toLowerCase()] = p.slice(idx + 1).trim();
+    }
+    if (map.https) picked = map.https;
+    else if (map.http) picked = map.http;
+    else if (map.socks) picked = map.socks.includes('://') ? map.socks : `socks5h://${map.socks}`;
+    else picked = pairs[0].slice(pairs[0].indexOf('=') + 1).trim();
+  }
+  if (picked && !/^[a-z0-9+.-]+:\/\//i.test(picked)) {
+    picked = `http://${picked}`;
+  }
+  return picked || null;
+}
+
+function execFileAsync(bin, cmdArgs, { timeoutMs = 8000, maxBuffer = 512 * 1024, signal = null } = {}) {
+  return new Promise((resolve) => {
+    const opts = { encoding: 'utf8', windowsHide: true, maxBuffer, timeout: timeoutMs };
+    if (signal) opts.signal = signal;
+    execFile(bin, cmdArgs, opts, (err, stdout) => {
+      const aborted = Boolean(
+        signal?.aborted || (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'))
+      );
+      const code = err ? (typeof err.code === 'number' ? err.code : String(err.code || 'ERR')) : 0;
+      if (err) resolve({ ok: false, aborted, code, error: err.message || String(err), stdout: String(stdout || '') });
+      else resolve({ ok: true, aborted: false, code: 0, error: '', stdout: String(stdout || '') });
+    });
+  });
+}
+
+async function detectWindowsSystemProxyAsync() {
+  if (process.platform !== 'win32') return null;
+  if (_cachedWinSystemProxy !== undefined) return _cachedWinSystemProxy;
+  if (hasProcessProxyEnv()) return null;
+  _cachedWinSystemProxy = null;
+  try {
+    const r = await execFileAsync(
+      'reg',
+      ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
+      { timeoutMs: 3000 }
+    );
+    if (r.ok && r.stdout) {
+      _cachedWinSystemProxy = parseWindowsProxyFromRegStdout(r.stdout);
+    }
+  } catch {
+    _cachedWinSystemProxy = null;
+  }
+  return _cachedWinSystemProxy;
+}
+
+async function resolveUpdateCurlProxyAsync() {
+  const hasEnvProxy = hasProcessProxyEnv();
+  const winProxy = hasEnvProxy ? null : await detectWindowsSystemProxyAsync();
+  return {
+    proxyUrl: winProxy || '',
+    hasEnvProxy,
+    hasEffectiveProxy: Boolean(hasEnvProxy || winProxy)
+  };
+}
+
+function combineAbortSignals(timeoutMs, externalSignal = null) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
+}
+
+function firstTruthyAsync(promises) {
+  if (!Array.isArray(promises) || promises.length === 0) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let remaining = promises.length;
+    let settled = false;
+    for (const p of promises) {
+      Promise.resolve(p).then(
+        (val) => {
+          if (settled) return;
+          if (val) {
+            settled = true;
+            resolve(val);
+            return;
+          }
+          remaining -= 1;
+          if (remaining <= 0) {
+            settled = true;
+            resolve(null);
+          }
+        },
+        () => {
+          if (settled) return;
+          remaining -= 1;
+          if (remaining <= 0) {
+            settled = true;
+            resolve(null);
+          }
+        }
+      );
+    }
+  });
+}
+
+async function fetchTextWithProxyFallback(
+  urlStr,
+  { timeoutSec = 8, maxBytes = 256 * 1024, signal = null, proxyInfo = null } = {}
+) {
+  if (signal?.aborted) return { ok: false, aborted: true, error: 'aborted' };
+  const isLoopback = isLoopbackHttpUrl(urlStr);
+  const resolvedProxy = isLoopback ? { proxyUrl: '', hasEnvProxy: false, hasEffectiveProxy: false } : proxyInfo || (await resolveUpdateCurlProxyAsync());
+  if (signal?.aborted) return { ok: false, aborted: true, error: 'aborted' };
+
+  let curlCode = null;
+  let curlErrorMsg = '';
+  try {
+    const curlBin = process.platform === 'win32' ? 'curl.exe' : 'curl';
+    const curlArgs = ['-fsSL', '--connect-timeout', '5', '--max-time', String(timeoutSec), '--max-filesize', String(maxBytes)];
+    if (isLoopback) curlArgs.push('--noproxy', '*');
+    else if (resolvedProxy.proxyUrl) curlArgs.push('--proxy', resolvedProxy.proxyUrl);
+    curlArgs.push(urlStr);
+    const cr = await execFileAsync(curlBin, curlArgs, {
+      timeoutMs: (timeoutSec + 3) * 1000,
+      maxBuffer: maxBytes + 64 * 1024,
+      signal
+    });
+    if (cr.ok && typeof cr.stdout === 'string' && cr.stdout.trim()) {
+      return { ok: true, text: cr.stdout, method: resolvedProxy.proxyUrl ? 'curl(win-system-proxy)' : 'curl' };
+    }
+    if (cr.aborted || signal?.aborted) {
+      return { ok: false, aborted: true, error: 'aborted' };
+    }
+    if (cr.code === 22) {
+      return { ok: false, curlExitCode: 22, error: 'HTTP error (curl status 22)' };
+    }
+    curlCode = cr.code;
+    curlErrorMsg = cr.error || (typeof cr.code === 'number' ? `curl failed with exit code ${cr.code}` : String(cr.code));
+  } catch (e) {
+    curlCode = e?.code || 'ERR';
+    curlErrorMsg = String(e?.message || e);
+  }
+
+  if (!isLoopback && resolvedProxy.hasEffectiveProxy && curlCode !== 'ENOENT') {
+    return { ok: false, error: curlErrorMsg || `curl failed with exit code ${curlCode}` };
+  }
+
+  try {
+    const res = await fetch(urlStr, {
+      redirect: 'follow',
+      signal: combineAbortSignals(timeoutSec * 1000, signal),
+      headers: { Accept: 'application/json, text/plain;q=0.9, */*;q=0.8' }
+    });
+    if (!res.ok) {
+      return { ok: false, httpStatus: res.status, error: `HTTP ${res.status}` };
+    }
+    const text = await res.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      return { ok: false, error: 'response_too_large' };
+    }
+    return { ok: true, text, method: 'node-fetch' };
+  } catch (err) {
+    const aborted = Boolean(signal?.aborted || err?.name === 'AbortError');
+    return { ok: false, ...(aborted ? { aborted: true } : {}), error: String(err?.message || err) };
+  }
+}
+
+async function resolveGithubLatestTagFallback({ timeoutSec = 8, signal = null, proxyInfo = null } = {}) {
+  if (signal?.aborted) return { ok: false, aborted: true, error: 'aborted' };
+  const resolvedProxy = proxyInfo || (await resolveUpdateCurlProxyAsync());
+  if (signal?.aborted) return { ok: false, aborted: true, error: 'aborted' };
+
+  let headerTarget = '';
+  let curlCode = null;
+  try {
+    const curlBin = process.platform === 'win32' ? 'curl.exe' : 'curl';
+    const curlArgs = ['-sSI', '--connect-timeout', '5', '--max-time', String(timeoutSec)];
+    if (resolvedProxy.proxyUrl) curlArgs.push('--proxy', resolvedProxy.proxyUrl);
+    curlArgs.push(GITHUB_RELEASES_LATEST_URL);
+    const cr = await execFileAsync(curlBin, curlArgs, {
+      timeoutMs: (timeoutSec + 3) * 1000,
+      signal
+    });
+    if (cr.aborted || signal?.aborted) {
+      return { ok: false, aborted: true, error: 'aborted' };
+    }
+    if (cr.ok && cr.stdout) {
+      headerTarget = String(cr.stdout);
+    }
+    curlCode = cr.code;
+  } catch (e) {
+    curlCode = e?.code || 'ERR';
+  }
+
+  let match = String(headerTarget).match(/\/releases\/tag\/(v?\d+\.\d+\.\d+)/i);
+  if (!match && (!resolvedProxy.hasEffectiveProxy || curlCode === 'ENOENT')) {
+    try {
+      const res = await fetch(GITHUB_RELEASES_LATEST_URL, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: combineAbortSignals(timeoutSec * 1000, signal)
+      });
+      headerTarget = res.headers?.get?.('location') || res.url || '';
+      match = String(headerTarget).match(/\/releases\/tag\/(v?\d+\.\d+\.\d+)/i);
+    } catch {}
+  }
+
+  if (!match) {
+    return { ok: false, error: `Unable to resolve GitHub latest tag from ${GITHUB_RELEASES_LATEST_URL}` };
+  }
+  const tag = match[1].startsWith('v') ? match[1] : `v${match[1]}`;
+  const cleanVer = tag.replace(/^v/i, '');
+  return {
+    ok: true,
+    source: 'github-releases-redirect',
+    manifest: {
+      schemaVersion: 1,
+      name: 'chuanban-antigravity-theme',
+      channel: 'stable',
+      version: cleanVer,
+      releasedAt: null,
+      minNodeVersion: '22.0.0',
+      changelog: [],
+      coreUpdateBundle: {
+        filename: `core-update-v${cleanVer}.zip`,
+        sha256: null,
+        mirrors: [
+          { id: 'github-release', url: `${GITHUB_REPO_URL}/releases/download/${tag}/core-update-v${cleanVer}.zip` },
+          { id: 'github-release-full', url: `${GITHUB_REPO_URL}/releases/download/${tag}/chuanban-antigravity-theme-v${cleanVer}.zip` },
+          { id: 'cloudflare-r2', url: `${R2_UPDATE_BASE_URL}/core-update-v${cleanVer}.zip` }
+        ]
+      },
+      fullReleaseUrl: `${GITHUB_REPO_URL}/releases/tag/${tag}`
+    }
+  };
+}
+
+async function fetchRemoteUpdateMetadata({ manifestUrlOverride = null, requestedVersion = null, preferredMirror = null } = {}) {
+  const allowLoopbackOrigin = manifestUrlOverride && isLoopbackHttpUrl(manifestUrlOverride) ? new URL(manifestUrlOverride).origin : null;
+
+  if (requestedVersion) {
+    const m = String(requestedVersion).trim().match(/^v?(\d+\.\d+\.\d+)$/);
+    if (!m) {
+      return { ok: false, error: `Invalid --version "${requestedVersion}". Expected format like 6.0.6 or v6.0.6.` };
+    }
+    const cleanVer = m[1];
+    const tag = `v${cleanVer}`;
+    if (!manifestUrlOverride) {
+      return {
+        ok: true,
+        allowLoopbackOrigin: null,
+        source: 'explicit-version-tag',
+        manifest: {
+          schemaVersion: 1,
+          name: 'chuanban-antigravity-theme',
+          channel: 'stable',
+          version: cleanVer,
+          minNodeVersion: '22.0.0',
+          changelog: [],
+          coreUpdateBundle: {
+            filename: `core-update-v${cleanVer}.zip`,
+            sha256: null,
+            mirrors: [
+              { id: 'cloudflare-r2', url: `${R2_UPDATE_BASE_URL}/core-update-v${cleanVer}.zip` },
+              { id: 'github-release', url: `${GITHUB_REPO_URL}/releases/download/${tag}/core-update-v${cleanVer}.zip` },
+              { id: 'github-release-full', url: `${GITHUB_REPO_URL}/releases/download/${tag}/chuanban-antigravity-theme-v${cleanVer}.zip` }
+            ]
+          },
+          fullReleaseUrl: `${GITHUB_REPO_URL}/releases/tag/${tag}`
+        }
+      };
+    }
+  }
+
+  const candidateMirrors = manifestUrlOverride
+    ? [{ id: 'custom-manifest', url: manifestUrlOverride }]
+    : resolveAssetMirrors({ mirrors: UPDATE_MANIFEST_MIRRORS, url: UPDATE_MANIFEST_MIRRORS[0].url }, { preferredMirror });
+
+  const errors = [];
+  if (manifestUrlOverride) {
+    const m = candidateMirrors[0];
+    if (!isAllowedUpdateUrl(m.url, { allowLoopbackOrigin })) {
+      errors.push({ mirror: m.id, url: m.url, error: 'blocked_untrusted_manifest_url' });
+      return { ok: false, errors, error: 'Failed to fetch update manifest from custom URL' };
+    }
+    const res = await fetchTextWithProxyFallback(m.url, { timeoutSec: 6, maxBytes: 256 * 1024 });
+    if (!res.ok) {
+      errors.push({ mirror: m.id, url: m.url, error: res.error || `HTTP ${res.httpStatus || 0}` });
+      return { ok: false, errors, error: 'Failed to fetch update manifest from custom URL' };
+    }
+    try {
+      const parsed = JSON.parse(String(res.text).replace(/^\uFEFF/, ''));
+      if (parsed && typeof parsed === 'object' && typeof parsed.version === 'string' && parsed.coreUpdateBundle) {
+        return { ok: true, allowLoopbackOrigin, source: m.id, manifest: parsed, errors };
+      }
+      errors.push({ mirror: m.id, url: m.url, error: 'invalid_manifest_schema' });
+    } catch (parseErr) {
+      errors.push({ mirror: m.id, url: m.url, error: `invalid_json: ${parseErr?.message || parseErr}` });
+    }
+    return { ok: false, errors, error: 'Failed to parse custom update manifest' };
+  }
+
+  const proxyInfo = await resolveUpdateCurlProxyAsync();
+  const ac = new AbortController();
+  const probeManifestMirror = async (m) => {
+    if (!isAllowedUpdateUrl(m.url, { allowLoopbackOrigin })) {
+      errors.push({ mirror: m.id, url: m.url, error: 'blocked_untrusted_manifest_url' });
+      return null;
+    }
+    const res = await fetchTextWithProxyFallback(m.url, {
+      timeoutSec: 6,
+      maxBytes: 256 * 1024,
+      signal: ac.signal,
+      proxyInfo
+    });
+    if (!res.ok) {
+      if (!res.aborted) {
+        errors.push({ mirror: m.id, url: m.url, error: res.error || `HTTP ${res.httpStatus || 0}` });
+      }
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(String(res.text).replace(/^\uFEFF/, ''));
+      if (parsed && typeof parsed === 'object' && typeof parsed.version === 'string' && parsed.coreUpdateBundle) {
+        return { ok: true, allowLoopbackOrigin, source: m.id, manifest: parsed };
+      }
+      errors.push({ mirror: m.id, url: m.url, error: 'invalid_manifest_schema' });
+    } catch (parseErr) {
+      errors.push({ mirror: m.id, url: m.url, error: `invalid_json: ${parseErr?.message || parseErr}` });
+    }
+    return null;
+  };
+
+  try {
+    const manifestPromises = candidateMirrors.map((m) => probeManifestMirror(m));
+    const ghRedirectPromise = resolveGithubLatestTagFallback({
+      timeoutSec: 6,
+      signal: ac.signal,
+      proxyInfo
+    }).catch(() => null);
+
+    const winner = await firstTruthyAsync(manifestPromises);
+    if (winner) {
+      ac.abort();
+      return { ...winner, errors };
+    }
+
+    const ghFallback = await ghRedirectPromise;
+    if (ghFallback && ghFallback.ok) {
+      return {
+        ok: true,
+        allowLoopbackOrigin: null,
+        source: ghFallback.source,
+        manifest: ghFallback.manifest,
+        errors
+      };
+    }
+    if (ghFallback && ghFallback.error && !ghFallback.aborted) {
+      errors.push({ mirror: 'github-releases-redirect', error: ghFallback.error });
+    }
+    return { ok: false, errors, error: 'Failed to fetch update manifest from all official sources' };
+  } finally {
+    ac.abort();
+  }
+}
+
+function inspectZipEntriesSafe(zipPath) {
+  if (process.platform === 'win32') {
+    const cfgTmp = path.join(os.tmpdir(), `ag-ziplist-cfg-${process.pid}-${Date.now()}.json`);
+    try {
+      fs.writeFileSync(cfgTmp, JSON.stringify({ zip: path.resolve(zipPath) }), 'utf8');
+      const psScript = [
+        '$ErrorActionPreference = "Stop"',
+        'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+        `$cfg = Get-Content -LiteralPath '${cfgTmp.replace(/'/g, "''")}' -Raw -Encoding UTF8 | ConvertFrom-Json`,
+        '$zr = [System.IO.Compression.ZipFile]::OpenRead([string]$cfg.zip)',
+        '$names = New-Object System.Collections.Generic.List[string]',
+        'try { foreach ($e in $zr.Entries) { $names.Add([string]$e.FullName) } } finally { $zr.Dispose() }',
+        '$names | ConvertTo-Json -Compress'
+      ].join('\n');
+      const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psScript], {
+        encoding: 'utf8',
+        windowsHide: true,
+        maxBuffer: 5 * 1024 * 1024
+      });
+      if (r.status !== 0) return { ok: false, reason: 'zip_open_failed', error: (r.stderr || r.stdout || '').trim().slice(0, 240) };
+      const parsed = JSON.parse(String(r.stdout || '[]').trim() || '[]');
+      const entries = Array.isArray(parsed) ? parsed : [parsed];
+      for (const entry of entries) {
+        const norm = String(entry || '');
+        if (!norm || norm.includes('\0') || norm.startsWith('/') || norm.startsWith('\\') || /^[a-zA-Z]:/.test(norm)) {
+          return { ok: false, reason: 'unsafe_zip_entry_path', entry: norm };
+        }
+        const parts = norm.split(/[\\/]+/);
+        if (parts.some((p) => p === '..')) {
+          return { ok: false, reason: 'zip_slip_traversal_detected', entry: norm };
+        }
+      }
+      return { ok: true, count: entries.length };
+    } catch (err) {
+      return { ok: false, reason: 'zip_inspect_error', error: String(err?.message || err) };
+    } finally {
+      try {
+        if (fs.existsSync(cfgTmp)) fs.unlinkSync(cfgTmp);
+      } catch {}
+    }
+  }
+
+  const r = spawnSync('unzip', ['-Z1', zipPath], { encoding: 'utf8', maxBuffer: 5 * 1024 * 1024 });
+  if (r.status !== 0) return { ok: false, reason: 'zip_list_failed', error: (r.stderr || '').trim().slice(0, 240) };
+  const entries = String(r.stdout || '').split(/\r?\n/).filter(Boolean);
+  for (const entry of entries) {
+    if (entry.includes('\0') || entry.startsWith('/') || entry.startsWith('\\') || /^[a-zA-Z]:/.test(entry)) {
+      return { ok: false, reason: 'unsafe_zip_entry_path', entry };
+    }
+    const parts = entry.split(/[\\/]+/);
+    if (parts.some((p) => p === '..')) {
+      return { ok: false, reason: 'zip_slip_traversal_detected', entry };
+    }
+  }
+  return { ok: true, count: entries.length };
+}
+
+function inspectExtractedTreeSafe(rootDir) {
+  const walk = (dir) => {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const st = fs.lstatSync(full);
+      if (st.isSymbolicLink()) {
+        return { ok: false, reason: 'symlink_detected_in_archive', entry: path.relative(rootDir, full) };
+      }
+      if (st.isDirectory()) {
+        const sub = walk(full);
+        if (!sub.ok) return sub;
+      }
+    }
+    return { ok: true };
+  };
+  try {
+    if (!fs.existsSync(rootDir)) return { ok: false, reason: 'extracted_dir_missing' };
+    return walk(rootDir);
+  } catch (err) {
+    return { ok: false, reason: 'extracted_tree_scan_error', error: String(err?.message || err) };
+  }
+}
+
+function locateStagedBundleRoot(unpackedDir) {
+  const isRoot = (dir) =>
+    fs.existsSync(path.join(dir, 'install.mjs')) &&
+    fs.existsSync(path.join(dir, 'core', 'manifest.json')) &&
+    fs.existsSync(path.join(dir, 'core', 'daemon.mjs'));
+  if (isRoot(unpackedDir)) return unpackedDir;
+  for (const child of fs.readdirSync(unpackedDir, { withFileTypes: true })) {
+    if (!child.isDirectory()) continue;
+    const candidate = path.join(unpackedDir, child.name);
+    if (isRoot(candidate)) return candidate;
+  }
+  return null;
+}
+
+function semverSatisfiesMin(currentVer, minVer) {
+  const cur = extractBaseSemverTuple(currentVer);
+  const min = extractBaseSemverTuple(minVer);
+  if (!cur || !min) return true;
+  return compareSemverTuples(cur, min) >= 0;
+}
+
+function isUpgradeLockPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  let exists = false;
+  try {
+    process.kill(pid, 0);
+    exists = true;
+  } catch (err) {
+    if (err && err.code === 'EPERM') exists = true;
+  }
+  if (!exists) return false;
+  if (process.platform === 'win32') {
+    try {
+      const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 4000
+      });
+      if (r.status === 0) {
+        return String(r.stdout || '').toLowerCase().includes('node.exe');
+      }
+    } catch {}
+  }
+  return true;
+}
+
+function acquireUpgradeLock(targetDir) {
+  const cacheDir = path.join(targetDir, '.cache');
+  const lockPath = path.join(cacheDir, 'upgrade.lock');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const startedAt = new Date().toISOString();
+  const buildPayload = (phase) => `${JSON.stringify({ pid: process.pid, phase, startedAt })}\n`;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeFileSync(fd, buildPayload('download'), 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      let released = false;
+      const setPhase = (nextPhase) => {
+        if (released) return;
+        try {
+          const tmpLock = `${lockPath}.tmp-${process.pid}-${Date.now()}`;
+          fs.writeFileSync(tmpLock, buildPayload(nextPhase), 'utf8');
+          fs.renameSync(tmpLock, lockPath);
+        } catch {}
+      };
+      const release = () => {
+        if (released) return;
+        released = true;
+        try {
+          if (!fs.existsSync(lockPath)) return;
+          const raw = fs.readFileSync(lockPath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (Number(parsed?.pid) === process.pid) {
+            fs.unlinkSync(lockPath);
+          }
+        } catch {}
+      };
+      return { ok: true, lockPath, setPhase, release };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') {
+        return { ok: false, error: `Failed to acquire upgrade lock: ${err?.message || err}` };
+      }
+      let holderPid = 0;
+      let holderStartedAt = null;
+      let stale = false;
+      try {
+        const st = fs.statSync(lockPath);
+        const ageMs = Date.now() - st.mtimeMs;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+          holderPid = Number(parsed?.pid) || 0;
+          holderStartedAt = typeof parsed?.startedAt === 'string' ? parsed.startedAt : null;
+        } catch {
+          holderPid = 0;
+        }
+        if (holderPid > 0) {
+          const alive = isUpgradeLockPidAlive(holderPid);
+          stale = !alive || ageMs > 15 * 60 * 1000;
+        } else {
+          stale = ageMs > 10000;
+        }
+      } catch {
+        stale = true;
+      }
+      if (!stale || attempt > 0) {
+        return {
+          ok: false,
+          pid: holderPid || null,
+          startedAt: holderStartedAt,
+          error: holderPid
+            ? `Another upgrade process is already running (PID ${holderPid})`
+            : 'Another upgrade process is already running'
+        };
+      }
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {}
+    }
+  }
+  return { ok: false, error: 'Another upgrade process is already running' };
+}
+
+async function runUpgrade() {
+  const checkOnly = hasFlag('--check') || hasFlag('--dry-run');
+  const force = hasFlag('--force');
+  const requestedVersion = getArg('--version', null);
+  const preferredMirror = getArg('--mirror', null);
+  const manifestUrlOverride = getArg('--manifest-url', null);
+  const defaultTarget = resolveGlobalInstallDir();
+  const targetDir = path.resolve(getArg('--target-dir', resolveDefaultTargetDir()));
+  const isCustomSandboxTarget =
+    hasFlag('--target-dir') && !isSameTargetPath(targetDir, defaultTarget) && !hasFlag('--register-service');
+
+  const currentManifest = readInstalledCoreManifest(targetDir);
+  if (!currentManifest || !currentManifest.version) {
+    console.error(`[ERROR] No valid installation found at ${targetDir} (missing core/manifest.json). Run "node install.mjs install" first.`);
+    process.exit(1);
+  }
+  const fromVersion = String(currentManifest.version);
+  const preUpgradeManifestPath = path.join(targetDir, 'core', 'manifest.json');
+  const preUpgradeManifestSha = fs.existsSync(preUpgradeManifestPath) ? sha256File(preUpgradeManifestPath) : null;
+  const existingCache = readUpdateCheckCache(targetDir) || {};
+
+  const remote = await fetchRemoteUpdateMetadata({ manifestUrlOverride, requestedVersion, preferredMirror });
+  if (!remote.ok || !remote.manifest) {
+    console.error(JSON.stringify({ ok: false, currentVersion: fromVersion, error: remote.error, errors: remote.errors || [] }, null, 2));
+    process.exit(1);
+  }
+
+  const remoteManifest = remote.manifest;
+  if (
+    remoteManifest.name &&
+    currentManifest.name &&
+    String(remoteManifest.name).trim() !== String(currentManifest.name).trim()
+  ) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          step: 'package_mismatch',
+          expectedName: currentManifest.name,
+          actualName: remoteManifest.name,
+          error: `Remote update package name mismatch: expected "${currentManifest.name}", got "${remoteManifest.name}"`
+        },
+        null,
+        2
+      )
+    );
+    process.exit(1);
+  }
+  const toVersion = String(remoteManifest.version || '').replace(/^v/i, '');
+  const MIN_HOT_UPGRADE_TARGET_VERSION = '6.0.6';
+  if (requestedVersion && !semverSatisfiesMin(toVersion, MIN_HOT_UPGRADE_TARGET_VERSION) && !force) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          step: 'downgrade_unsupported',
+          requestedVersion: toVersion,
+          minSupportedTargetVersion: MIN_HOT_UPGRADE_TARGET_VERSION,
+          error: `Target v${toVersion} predates two-phase hot upgrade (< v${MIN_HOT_UPGRADE_TARGET_VERSION}). Use "node install.mjs rollback" or full repository "install" instead.`
+        },
+        null,
+        2
+      )
+    );
+    process.exit(1);
+  }
+  const semverNewer = isUpdateAvailableVersion(fromVersion, toVersion);
+  const requiredMinAgVersion =
+    typeof remoteManifest.minAntigravityVersion === 'string' && remoteManifest.minAntigravityVersion.trim()
+      ? remoteManifest.minAntigravityVersion.trim()
+      : null;
+  const requiredMinNodeVersion =
+    typeof remoteManifest.minNodeVersion === 'string' && remoteManifest.minNodeVersion.trim()
+      ? remoteManifest.minNodeVersion.trim()
+      : '22.0.0';
+
+  const hostEnv = requiredMinAgVersion || !checkOnly ? await detectEnvironment('auto') : null;
+  const hostAppVersion = hostEnv?.appVersion || null;
+  const hostVersionCompatible =
+    !requiredMinAgVersion || !hostAppVersion || semverSatisfiesMin(hostAppVersion, requiredMinAgVersion);
+  const nodeVersionCompatible = semverSatisfiesMin(process.versions.node, requiredMinNodeVersion);
+  const incompatibleHost = Boolean(semverNewer && !hostVersionCompatible);
+  const incompatibleNode = Boolean(semverNewer && !nodeVersionCompatible);
+  const updateAvailable = Boolean(semverNewer && hostVersionCompatible && nodeVersionCompatible);
+
+  const candidateReleaseUrl = remoteManifest.fullReleaseUrl || `${GITHUB_REPO_URL}/releases/tag/v${toVersion}`;
+  const releaseUrl = isAllowedUpdateUrl(candidateReleaseUrl, { allowLoopbackOrigin: remote.allowLoopbackOrigin })
+    ? candidateReleaseUrl
+    : `${GITHUB_REPO_URL}/releases/tag/v${toVersion}`;
+
+  const preUpgradeCacheSnapshot = {
+    checkedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    source: remote.source,
+    currentVersion: fromVersion,
+    latestVersion: toVersion,
+    updateAvailable,
+    minAntigravityVersion: requiredMinAgVersion,
+    minNodeVersion: requiredMinNodeVersion,
+    hostAppVersion,
+    incompatibleHost,
+    incompatibleNode,
+    dismissedVersion: checkOnly || !updateAvailable ? null : existingCache.dismissedVersion || null,
+    changelog: Array.isArray(remoteManifest.changelog) ? remoteManifest.changelog : [],
+    bundleBytes: Number(remoteManifest.coreUpdateBundle?.bytes || 0) || null,
+    releaseUrl
+  };
+  writeUpdateCheckCache(targetDir, preUpgradeCacheSnapshot);
+
+  if (checkOnly) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          checkOnly: true,
+          targetDir,
+          currentVersion: fromVersion,
+          latestVersion: toVersion,
+          updateAvailable,
+          incompatibleHost,
+          incompatibleNode,
+          hostAppVersion,
+          minAntigravityVersion: requiredMinAgVersion,
+          minNodeVersion: requiredMinNodeVersion,
+          upgraded: false,
+          source: remote.source,
+          changelog: remoteManifest.changelog || [],
+          releaseUrl
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  if ((semverNewer || requestedVersion || force) && !hostVersionCompatible && !force) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          step: 'antigravity_version',
+          currentVersion: fromVersion,
+          latestVersion: toVersion,
+          hostAppVersion,
+          minAntigravityVersion: requiredMinAgVersion,
+          error: `Antigravity >= ${requiredMinAgVersion} required for v${toVersion} (current: ${hostAppVersion})`
+        },
+        null,
+        2
+      )
+    );
+    process.exit(1);
+  }
+
+  if ((semverNewer || requestedVersion || force) && !nodeVersionCompatible && !force) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          step: 'node_version',
+          currentVersion: fromVersion,
+          latestVersion: toVersion,
+          minNodeVersion: requiredMinNodeVersion,
+          error: `Node.js >= ${requiredMinNodeVersion} required for v${toVersion} (current: ${process.versions.node})`
+        },
+        null,
+        2
+      )
+    );
+    process.exit(1);
+  }
+
+  if (!updateAvailable && !force && !requestedVersion) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          checkOnly: false,
+          targetDir,
+          currentVersion: fromVersion,
+          latestVersion: toVersion,
+          updateAvailable: false,
+          hostAppVersion,
+          minAntigravityVersion: requiredMinAgVersion,
+          upgraded: false,
+          source: remote.source,
+          changelog: remoteManifest.changelog || [],
+          releaseUrl
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  const bundleSpec = remoteManifest.coreUpdateBundle || remoteManifest.fullBundle;
+  if (!bundleSpec || !Array.isArray(bundleSpec.mirrors) || bundleSpec.mirrors.length === 0) {
+    console.error('[ERROR] Remote manifest has no downloadable update bundle mirrors.');
+    process.exit(1);
+  }
+
+  const trustedMirrors = bundleSpec.mirrors.filter((m) =>
+    m && m.url && isAllowedUpdateUrl(m.url, { allowLoopbackOrigin: remote.allowLoopbackOrigin })
+  );
+  if (trustedMirrors.length === 0) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          error: 'No trusted update bundle URL matched official domain whitelist',
+          rejectedUrls: bundleSpec.mirrors.map((m) => m?.url).filter(Boolean)
+        },
+        null,
+        2
+      )
+    );
+    process.exit(1);
+  }
+
+  const lock = acquireUpgradeLock(targetDir);
+  if (!lock.ok) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          step: 'lock',
+          error: lock.error,
+          ...(lock.pid ? { holderPid: lock.pid } : {}),
+          ...(lock.startedAt ? { holderStartedAt: lock.startedAt } : {})
+        },
+        null,
+        2
+      )
+    );
+    process.exit(1);
+  }
+  const releaseLockOnce = () => {
+    lock.release();
+  };
+  process.once('exit', releaseLockOnce);
+
+  const stagingRoot = path.join(targetDir, '.cache', 'staging', `upgrade-v${toVersion}-${process.pid}-${Date.now()}`);
+  const unpackedDir = path.join(stagingRoot, 'unpacked');
+  const cleanupStaging = () => {
+    try {
+      fs.rmSync(stagingRoot, { recursive: true, force: true });
+    } catch {}
+  };
+
+  let backupInstallScriptPath = null;
+  const restoreInstallScriptBackup = () => {
+    if (backupInstallScriptPath && fs.existsSync(backupInstallScriptPath)) {
+      try {
+        fs.copyFileSync(backupInstallScriptPath, path.join(targetDir, 'install.mjs'));
+      } catch {}
+    }
+  };
+
+  let wrotePostUpgradeCache = false;
+  try {
+    fs.mkdirSync(stagingRoot, { recursive: true });
+    const downloadAssetSpec = {
+      id: `core-update-v${toVersion}`,
+      filename: bundleSpec.filename || `core-update-v${toVersion}.zip`,
+      url: trustedMirrors[0].url,
+      mirrors: trustedMirrors,
+      kind: 'zip',
+      minBytes: 32 * 1024,
+      sha256: bundleSpec.sha256 || null,
+      timeoutSec: 45
+    };
+
+    const dlRes = await downloadFontAsset(downloadAssetSpec, stagingRoot, {
+      force: true,
+      preferredMirror
+    });
+    if (!dlRes.ok || !dlRes.filePath) {
+      cleanupStaging();
+      console.error(JSON.stringify({ ok: false, step: 'download', error: 'Failed to download verified update package', details: dlRes }, null, 2));
+      process.exit(1);
+    }
+
+    const zipCheck = inspectZipEntriesSafe(dlRes.filePath);
+    if (!zipCheck.ok) {
+      cleanupStaging();
+      console.error(JSON.stringify({ ok: false, step: 'zip_security_check', ...zipCheck }, null, 2));
+      process.exit(1);
+    }
+
+    const extractRes = extractZipArchive(dlRes.filePath, unpackedDir);
+    if (!extractRes.ok) {
+      cleanupStaging();
+      console.error(JSON.stringify({ ok: false, step: 'extract', ...extractRes }, null, 2));
+      process.exit(1);
+    }
+
+    const treeCheck = inspectExtractedTreeSafe(unpackedDir);
+    if (!treeCheck.ok) {
+      cleanupStaging();
+      console.error(JSON.stringify({ ok: false, step: 'extracted_tree_security_check', ...treeCheck }, null, 2));
+      process.exit(1);
+    }
+
+    const stagedRoot = locateStagedBundleRoot(unpackedDir);
+    if (!stagedRoot) {
+      cleanupStaging();
+      console.error(JSON.stringify({ ok: false, step: 'locate_bundle', error: 'Extracted archive does not contain install.mjs + core/' }, null, 2));
+      process.exit(1);
+    }
+
+    const stagedIntegrity = verifyCoreIntegrity(stagedRoot);
+    const stagedManifest = readInstalledCoreManifest(stagedRoot);
+    if (!stagedIntegrity.ok || !stagedManifest || !stagedManifest.name) {
+      cleanupStaging();
+      console.error(
+        JSON.stringify(
+          {
+            ok: false,
+            step: 'staged_integrity',
+            error: 'Staged package failed core manifest SHA-256 verification',
+            stagedIntegrity
+          },
+          null,
+          2
+        )
+      );
+      process.exit(1);
+    }
+    if (
+      currentManifest.name &&
+      String(stagedManifest.name).trim() !== String(currentManifest.name).trim()
+    ) {
+      cleanupStaging();
+      console.error(
+        JSON.stringify(
+          {
+            ok: false,
+            step: 'package_mismatch',
+            expectedName: currentManifest.name,
+            actualName: stagedManifest.name,
+            error: `Staged update package name mismatch: expected "${currentManifest.name}", got "${stagedManifest.name}"`
+          },
+          null,
+          2
+        )
+      );
+      process.exit(1);
+    }
+    if (String(stagedManifest.version).replace(/^v/i, '') !== toVersion) {
+      cleanupStaging();
+      console.error(
+        JSON.stringify(
+          {
+            ok: false,
+            step: 'version_mismatch',
+            expected: toVersion,
+            actual: stagedManifest.version
+          },
+          null,
+          2
+        )
+      );
+      process.exit(1);
+    }
+    if (!semverSatisfiesMin(process.versions.node, stagedManifest.minNodeVersion || '22.0.0') && !force) {
+      cleanupStaging();
+      console.error(
+        JSON.stringify(
+          {
+            ok: false,
+            step: 'node_version',
+            error: `Node.js >= ${stagedManifest.minNodeVersion} required for v${toVersion} (current: ${process.versions.node})`
+          },
+          null,
+          2
+        )
+      );
+      process.exit(1);
+    }
+
+    const stagedMinAgVersion =
+      typeof stagedManifest.minAntigravityVersion === 'string' && stagedManifest.minAntigravityVersion.trim()
+        ? stagedManifest.minAntigravityVersion.trim()
+        : requiredMinAgVersion;
+    if (stagedMinAgVersion && hostAppVersion && !semverSatisfiesMin(hostAppVersion, stagedMinAgVersion) && !force) {
+      cleanupStaging();
+      console.error(
+        JSON.stringify(
+          {
+            ok: false,
+            step: 'antigravity_version',
+            hostAppVersion,
+            minAntigravityVersion: stagedMinAgVersion,
+            error: `Antigravity >= ${stagedMinAgVersion} required for v${toVersion} (current: ${hostAppVersion})`
+          },
+          null,
+          2
+        )
+      );
+      process.exit(1);
+    }
+
+    const writeLastUpgradeResult = (payload) => {
+      try {
+        const cacheDir = path.join(targetDir, '.cache');
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const resultPath = path.join(cacheDir, 'last-upgrade-result.json');
+        const tmpPath = `${resultPath}.tmp-${process.pid}-${Date.now()}`;
+        fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+        fs.renameSync(tmpPath, resultPath);
+      } catch {}
+    };
+
+    let patchEnabledExpected = true;
+    try {
+      const userCfgPath = path.join(targetDir, 'user', 'config.json');
+      if (fs.existsSync(userCfgPath)) {
+        const userCfgBefore = JSON.parse(fs.readFileSync(userCfgPath, 'utf8'));
+        patchEnabledExpected = userCfgBefore?.enabled !== false;
+      }
+    } catch {}
+
+    let preUpgradeLiveReachable = false;
+    if (!isCustomSandboxTarget) {
+      const preEnv = hostEnv || (await detectEnvironment('auto'));
+      const preLive = await inspectLiveWindow(preEnv);
+      preUpgradeLiveReachable = Boolean(preLive.reachable);
+    }
+
+    const currentInstallScript = path.join(targetDir, 'install.mjs');
+    if (fs.existsSync(currentInstallScript)) {
+      const backupsDir = path.join(targetDir, 'backups');
+      fs.mkdirSync(backupsDir, { recursive: true });
+      backupInstallScriptPath = path.join(backupsDir, 'install.mjs.prev');
+      fs.copyFileSync(currentInstallScript, backupInstallScriptPath);
+    }
+
+    let winDaemonStopped = false;
+    const restoreWindowsDaemonIfNeeded = () => {
+      if (!winDaemonStopped || isCustomSandboxTarget || process.platform !== 'win32') return;
+      winDaemonStopped = false;
+      const realDaemon = path.join(targetDir, 'core', 'daemon.mjs');
+      const wrapperDaemon = path.join(os.homedir(), '.gemini', 'antigravity', 'scripts', 'antigravity-font-daemon.mjs');
+      let restartedViaTask = false;
+      try {
+        const r = spawnSync('schtasks', ['/Run', '/TN', 'AntigravityThemeDaemon'], {
+          stdio: 'ignore',
+          windowsHide: true
+        });
+        restartedViaTask = r.status === 0;
+      } catch {}
+      if (!restartedViaTask) {
+        try {
+          const entryScript = fs.existsSync(wrapperDaemon) ? wrapperDaemon : realDaemon;
+          if (fs.existsSync(entryScript)) {
+            const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entryScript], {
+              cwd: os.homedir(),
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true
+            });
+            child.unref();
+          }
+        } catch {}
+      }
+    };
+
+    // 进入本地替换提交阶段：通知守护进程看门狗严禁中途 SIGKILL，同时挂起旧守护进程 2.5s sync 抢注与 Win32 PT5M 保活抢锁
+    lock.setPhase?.('commit');
+
+    // 仅 Windows 提前停守护进程释放 NTFS 文件锁；macOS(launchd)/Linux(systemd) 依托 upgrade.lock 暂停旧守护重注，待阶段 C 再原子重启服务
+    if (!isCustomSandboxTarget && process.platform === 'win32') {
+      stopRunningDaemonProcesses();
+      winDaemonStopped = true;
+    }
+
+    // 阶段 A（Bootstrap Handoff）：由暂存区新版 install.mjs 替换 core/ 并执行 --once 单次重注，暂不重启后台服务（防止提前杀死父守护进程）
+    const handoffArgs = [path.join(stagedRoot, 'install.mjs'), 'install', '--target-dir', targetDir];
+    if (!isCustomSandboxTarget) {
+      handoffArgs.push('--register-service', '--skip-service-restart');
+    }
+    const handoffRes = spawnSync(process.execPath, handoffArgs, {
+      cwd: stagedRoot,
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024
+    });
+
+    // 阶段 B：校验磁盘 core/ SHA-256 与全部已打开实机宿主页真实注入版本号（兼容 enabled:false 禁用态，杜绝单页漏检与旧 DOM 假阳性）
+    const postIntegrity = verifyCoreIntegrity(targetDir);
+    let postLiveOk = true;
+    let postLiveReport = null;
+    let postLiveReason = null;
+    if (!isCustomSandboxTarget && preUpgradeLiveReachable) {
+      const postEnv = await detectEnvironment('auto');
+      postLiveReport = await inspectLiveWindow(postEnv);
+      if (!postLiveReport.reachable) {
+        postLiveOk = false;
+        postLiveReason = 'Live Antigravity CDP window became unreachable after staging';
+      } else {
+        const pagesToVerify =
+          Array.isArray(postLiveReport.hostPages) && postLiveReport.hostPages.length > 0
+            ? postLiveReport.hostPages
+            : postLiveReport.state
+              ? [{ targetId: postLiveReport.targetId, title: postLiveReport.title, state: postLiveReport.state }]
+              : [];
+        for (const hp of pagesToVerify) {
+          const liveVer = String(hp.state?.version || '');
+          const hasTargetVer = liveVer.includes(`-v${toVersion}-`);
+          if (!hasTargetVer) {
+            postLiveOk = false;
+            postLiveReason = `Live window (${hp.targetId || 'page'}) runtime did not advance to v${toVersion} (reported: ${liveVer || 'none'})`;
+            break;
+          }
+          if (patchEnabledExpected) {
+            if (!hp.state?.hasStyle || liveVer.endsWith('-disabled')) {
+              postLiveOk = false;
+              postLiveReason = `Live window (${hp.targetId || 'page'}) missing active theme style after upgrade`;
+              break;
+            }
+          } else if (!liveVer.endsWith('-disabled')) {
+            postLiveOk = false;
+            postLiveReason = `Expected disabled runtime marker for v${toVersion} on ${hp.targetId || 'page'} (got: ${liveVer})`;
+            break;
+          }
+        }
+      }
+    }
+
+    if (handoffRes.status !== 0 || !postIntegrity.ok || !postLiveOk) {
+      writeUpdateCheckCache(targetDir, preUpgradeCacheSnapshot);
+      wrotePostUpgradeCache = false;
+      restoreInstallScriptBackup();
+      let rollbackOk = false;
+      const installedAfterFail = readInstalledCoreManifest(targetDir)?.version || null;
+      const postFailManifestSha = fs.existsSync(preUpgradeManifestPath) ? sha256File(preUpgradeManifestPath) : null;
+      const coreWasModified =
+        !postIntegrity.ok ||
+        installedAfterFail !== fromVersion ||
+        (preUpgradeManifestSha && postFailManifestSha !== preUpgradeManifestSha);
+      if (coreWasModified) {
+        try {
+          lock.setPhase?.('service_handoff');
+          const rbTarget = path.join(targetDir, 'install.mjs');
+          const rbArgs = [rbTarget, 'rollback', '--target-dir', targetDir];
+          if (!isCustomSandboxTarget) {
+            rbArgs.push('--register-service');
+            if (process.platform !== 'win32') {
+              rbArgs.push('--skip-service-restart');
+            }
+          }
+          const rbRes = spawnSync(process.execPath, rbArgs, { encoding: 'utf8', windowsHide: true });
+          rollbackOk = rbRes.status === 0;
+          if (rollbackOk && process.platform === 'win32') {
+            winDaemonStopped = false;
+          }
+        } catch {}
+      } else {
+        rollbackOk = true;
+      }
+      lock.setPhase?.('service_handoff');
+      restoreWindowsDaemonIfNeeded();
+      const failSummary =
+        postLiveReason ||
+        (!postIntegrity.ok ? 'Post-install core integrity verification failed' : '') ||
+        String(handoffRes.stderr || '').trim().split(/\r?\n/).pop() ||
+        `Handoff exited with code ${handoffRes.status}`;
+      writeLastUpgradeResult({
+        ts: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        ok: false,
+        fromVersion,
+        attemptedVersion: toVersion,
+        rolledBack: rollbackOk,
+        error: String(failSummary).slice(0, 180)
+      });
+      cleanupStaging();
+      releaseLockOnce();
+      console.error(
+        JSON.stringify(
+          {
+            ok: false,
+            upgraded: false,
+            rolledBack: rollbackOk,
+            fromVersion,
+            attemptedVersion: toVersion,
+            error: failSummary,
+            handoffExitCode: handoffRes.status,
+            postIntegrity,
+            postLiveOk,
+            postLiveReport,
+            stderr: String(handoffRes.stderr || '').trim().slice(0, 600)
+          },
+          null,
+          2
+        )
+      );
+      process.exit(1);
+    }
+
+    // 阶段 C：验收全部通过后先切锁至 service_handoff 放行新守护进程启动，落盘完成态缓存，重启系统常驻服务，最后释放升级锁
+    lock.setPhase?.('service_handoff');
+    const upgradedIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    writeUpdateCheckCache(targetDir, {
+      checkedAt: upgradedIso,
+      upgradedAt: upgradedIso,
+      source: dlRes.mirror || remote.source,
+      currentVersion: toVersion,
+      latestVersion: toVersion,
+      updateAvailable: false,
+      minAntigravityVersion: stagedMinAgVersion || null,
+      minNodeVersion: stagedManifest.minNodeVersion || requiredMinNodeVersion || null,
+      hostAppVersion,
+      incompatibleHost: false,
+      incompatibleNode: false,
+      dismissedVersion: null,
+      changelog: Array.isArray(remoteManifest.changelog) ? remoteManifest.changelog : [],
+      bundleBytes: dlRes.bytes,
+      releaseUrl
+    });
+    wrotePostUpgradeCache = true;
+
+    let serviceInfo = { skipped: true, reason: 'custom-target-dir' };
+    if (!isCustomSandboxTarget) {
+      const wrapperDaemon = path.join(os.homedir(), '.gemini', 'antigravity', 'scripts', 'antigravity-font-daemon.mjs');
+      serviceInfo = registerSystemService(targetDir, wrapperDaemon);
+      winDaemonStopped = false;
+    }
+
+    const serviceWarning =
+      !isCustomSandboxTarget && serviceInfo && typeof serviceInfo === 'object' ? serviceInfo.taskUpdateWarning || null : null;
+    writeLastUpgradeResult({
+      ts: upgradedIso,
+      ok: true,
+      fromVersion,
+      toVersion,
+      upgradedAt: upgradedIso,
+      ...(serviceWarning ? { warning: serviceWarning } : {})
+    });
+
+    cleanupStaging();
+    releaseLockOnce();
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          upgraded: true,
+          fromVersion,
+          toVersion,
+          targetDir,
+          mirror: dlRes.mirror || remote.source,
+          bundleBytes: dlRes.bytes,
+          coreIntegrity: postIntegrity,
+          serviceInfo,
+          ...(serviceWarning ? { warning: serviceWarning } : {}),
+          userPreserved: true,
+          clientRestarted: false,
+          ...(postLiveReport ? { liveWindow: postLiveReport } : {})
+        },
+        null,
+        2
+      )
+    );
+  } catch (err) {
+    if (wrotePostUpgradeCache) {
+      writeUpdateCheckCache(targetDir, preUpgradeCacheSnapshot);
+    }
+    try {
+      lock.setPhase?.('service_handoff');
+      if (process.platform === 'win32' && !isCustomSandboxTarget) {
+        const realDaemon = path.join(targetDir, 'core', 'daemon.mjs');
+        const wrapperDaemon = path.join(os.homedir(), '.gemini', 'antigravity', 'scripts', 'antigravity-font-daemon.mjs');
+        const r = spawnSync('schtasks', ['/Run', '/TN', 'AntigravityThemeDaemon'], { stdio: 'ignore', windowsHide: true });
+        if (r.status !== 0) {
+          const entryScript = fs.existsSync(wrapperDaemon) ? wrapperDaemon : realDaemon;
+          if (fs.existsSync(entryScript)) {
+            const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entryScript], {
+              cwd: os.homedir(),
+              detached: true,
+              stdio: 'ignore',
+              windowsHide: true
+            });
+            child.unref();
+          }
+        }
+      }
+    } catch {}
+    cleanupStaging();
+    releaseLockOnce();
+    console.error(JSON.stringify({ ok: false, error: err?.message || String(err) }, null, 2));
+    process.exit(1);
+  }
+}
+
+let _cachedWinSystemProxy = undefined;
+function detectWindowsSystemProxy() {
+  if (process.platform !== 'win32') return null;
+  if (_cachedWinSystemProxy !== undefined) return _cachedWinSystemProxy;
+  _cachedWinSystemProxy = null;
+  if (hasProcessProxyEnv()) return null;
   try {
     const r = spawnSync(
       'reg',
@@ -3478,30 +5018,7 @@ function detectWindowsSystemProxy() {
       { encoding: 'utf8', windowsHide: true, timeout: 4000 }
     );
     if (r.status !== 0 || !r.stdout) return null;
-    const out = String(r.stdout);
-    const enabledMatch = out.match(/ProxyEnable\s+REG_DWORD\s+0x([0-9a-f]+)/i);
-    if (!enabledMatch || parseInt(enabledMatch[1], 16) !== 1) return null;
-    const serverMatch = out.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i);
-    if (!serverMatch) return null;
-    const raw = serverMatch[1].trim();
-    if (!raw) return null;
-    let picked = raw;
-    if (raw.includes('=')) {
-      const pairs = raw.split(';').map((s) => s.trim()).filter(Boolean);
-      const map = Object.create(null);
-      for (const p of pairs) {
-        const idx = p.indexOf('=');
-        if (idx > 0) map[p.slice(0, idx).trim().toLowerCase()] = p.slice(idx + 1).trim();
-      }
-      if (map.https) picked = map.https;
-      else if (map.http) picked = map.http;
-      else if (map.socks) picked = map.socks.includes('://') ? map.socks : `socks5h://${map.socks}`;
-      else picked = pairs[0].slice(pairs[0].indexOf('=') + 1).trim();
-    }
-    if (picked && !/^[a-z0-9+.-]+:\/\//i.test(picked)) {
-      picked = `http://${picked}`;
-    }
-    _cachedWinSystemProxy = picked || null;
+    _cachedWinSystemProxy = parseWindowsProxyFromRegStdout(r.stdout);
   } catch {
     _cachedWinSystemProxy = null;
   }
@@ -3672,7 +5189,8 @@ async function downloadFontAsset(
     // Strategy 1: curl / curl.exe（跨平台原生支持 HTTP_PROXY/HTTPS_PROXY，Windows 下自动探测系统注册表代理）
     try {
       const curlBin = process.platform === 'win32' ? 'curl.exe' : 'curl';
-      const winProxy = detectWindowsSystemProxy();
+      const isLoopbackMirror = isLoopbackHttpUrl(mirror.url);
+      const winProxy = isLoopbackMirror ? null : detectWindowsSystemProxy();
       const curlArgs = [
         '-fSL',
         '--retry',
@@ -3684,7 +5202,8 @@ async function downloadFontAsset(
         '--max-time',
         String(timeoutSec)
       ];
-      if (winProxy) curlArgs.push('--proxy', winProxy);
+      if (isLoopbackMirror) curlArgs.push('--noproxy', '*');
+      else if (winProxy) curlArgs.push('--proxy', winProxy);
       curlArgs.push('-o', partPath, mirror.url);
       const r = spawnSync(curlBin, curlArgs, {
         stdio: ['ignore', 'ignore', 'pipe'],
@@ -4565,8 +6084,14 @@ switch (subcommand) {
     break;
   }
   case 'pack': {
-    const packed = buildDistZip(__dirname);
-    console.log('Packed & verified dist archive:', packed.zipPath, `(verified ${packed.filesVerified} core files)`);
+    const packed = buildDistZip(__dirname, { updateBundleOnly: hasFlag('--update-bundle') });
+    console.log(
+      'Packed & verified dist archive:',
+      packed.zipPath,
+      `| core-update: ${packed.updateZipPath} (${packed.updateBytes}B)`,
+      `| latest.json: ${packed.latestJsonPath}`,
+      `(verified ${packed.filesVerified} core files)`
+    );
     break;
   }
   case 'doctor':
@@ -4574,6 +6099,9 @@ switch (subcommand) {
     break;
   case 'install':
     await runInstall();
+    break;
+  case 'upgrade':
+    await runUpgrade();
     break;
   case 'relaunch':
     await runRelaunch();
@@ -4599,6 +6127,7 @@ switch (subcommand) {
   default:
     console.log(`Usage:
   node install.mjs install          [--font-mode anthropic|native] [--channel auto|stable|insiders] [--preset native|morandi|absolutely|claude-desktop-purewhite|vintage-deep] [--dark-preset onyx|claude-warm] [--sync-user] [--with-launcher]
+  node install.mjs upgrade          [--check] [--version <vX.Y.Z>] [--mirror cloudflare-r2|github-release] [--force]
   node install.mjs relaunch         [--channel auto|stable|insiders] [--force]
   node install.mjs download-fonts   [--dir <download-dir>] [--all] [--force] [--super-ttc]
   node install.mjs install-fonts    --auto-download [--dir <download-dir>] [--force] [--super-ttc] [--retire-super-ttc]
@@ -4609,6 +6138,6 @@ switch (subcommand) {
   node install.mjs rollback
   node install.mjs uninstall
   node install.mjs build-manifest
-  node install.mjs pack`);
+  node install.mjs pack             [--update-bundle]`);
     break;
 }
