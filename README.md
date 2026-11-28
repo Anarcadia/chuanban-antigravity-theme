@@ -13,9 +13,30 @@ Built specifically as a **pure-English, ultra-lightweight parallel edition**:
 ## Key Features
 
 1. **Seven-Preset Editorial & Flat Botanical Palettes + `Follow System` Pairing**
-   - **Morandi Mineral (`MO` · Default)**: Warm Xuan-paper canvas paired with a crisp single-layer `2px` Slate-Mineral composer border (`#A3B5BA → #3D6470`).
-   - **Meadow Inkstone (`🌱` · `meadow`) & Forest Night (`🌲` · `forest-night`)**: Fresh flat botanical light & dark skins featuring an imperceptible `256×256` lossless opaque limestone canvas (`#FAFBF9`) paired with an inkstone shell (`#E9EDE9`), `1px` forest-green composer, sans-serif prose (`Google Sans Flex`), 100% opaque menus, and crisp zero-ink-bleed rendering on Windows DirectWrite.
-   - **Appearance Bar Switcher**: Switch instantly in **Settings → Appearance** across `[ A Original | ✳️ Absolutely! | MO Morandi | 🌱 Meadow Inkstone | 🌲 Forest Night | 📖 Warm Dark | 🌙 Dark ]` plus an independent **`Follow System`** light/dark auto-pairing toggle and Windows 11 `TitleBarOverlay` synchronization.
+   - Switch instantly in **Settings → Appearance** across **`[ A Original | ✳️ Absolutely! | MO Morandi | 🌱 Meadow Inkstone | 🌲 Forest Night | 📖 Warm Dark | 🌙 Dark ]`** plus an independent **`Follow System`** light/dark auto-pairing toggle and Windows 11 `TitleBarOverlay` synchronization:
+
+<table width="100%">
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-meadow-workbench.png"><img src="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-meadow-workbench.png" width="100%" alt="Meadow Inkstone light skin preview" /></a>
+      <p><b><code>🌱</code> Meadow Inkstone</b> (<code>meadow</code>) — Imperceptible <code>256×256</code> lossless opaque limestone canvas (<code>#FAFBF9</code>) paired with an inkstone outer shell (<code>#E9EDE9</code>), <code>1px</code> forest-green composer, sans-serif prose, and crisp zero-ink-bleed rendering on Windows DirectWrite.</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-forest-night-workbench.png"><img src="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-forest-night-workbench.png" width="100%" alt="Forest Night dark skin preview" /></a>
+      <p><b><code>🌲</code> Forest Night</b> (<code>forest-night</code>) — Warm pine-charcoal dark canvas (<code>#181B18</code>) with moss-slate opaque surfaces (<code>#202420</code>), botanical green accents, sans-serif prose, and zero <code>backdrop-filter</code> blur.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-morandi-workbench.png"><img src="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-morandi-workbench.png" width="100%" alt="Morandi Mineral default light skin preview" /></a>
+      <p><b><code>MO</code> Morandi Mineral</b> (<code>morandi</code> · <em>Default</em>) — Warm Xuan-paper canvas paired with a linen sidebar, editorial <code>Anthropic Serif</code> prose, and a single-layer <code>2px</code> Slate-Mineral composer border.</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-absolutely-workbench.png"><img src="https://raw.githubusercontent.com/Anarcadia/chuanban-antigravity-theme-patch/main/assets/preview-absolutely-workbench.png" width="100%" alt="Absolutely! warm white skin preview" /></a>
+      <p><b><code>✳️</code> Absolutely!</b> (<code>absolutely</code>) — Claude-inspired crisp warm-ivory paper paired with an oat sidebar, terracotta wax-seal composer border, and terracotta primary accents.</p>
+    </td>
+  </tr>
+</table>
 
 2. **Editorial Three-Layer Typography**
    - **UI Controls**: Native variable `Google Sans Flex` with optical weight balancing.
